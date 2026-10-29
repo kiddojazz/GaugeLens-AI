@@ -1,0 +1,47 @@
+# --- secrets (the template .env.example is the only env file that is shared)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+
+# --- private material: planning documents, footage, photos and test data
+docs/
+plans/
+data/
+
+# --- runtime data: evidence files, model-response cache, local results
+evidence/
+cache/
+eval/spikes/results/
+eval/spikes/screens/
+agent_redteam_results/
+*.log
+
+# --- python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- node / web
+node_modules/
+web/dist/
+web/e2e-report/
+web/e2e-results/
+web/test-results/
+*.tsbuildinfo
+
+# --- editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,62 @@
+# Off-grid inverter (docs/04_physics_rules_spec.md §2.1). Constants per equipment row:
+#   nominal_v (12/24/48), rated_va (nameplate), idle_w (no-load draw, manual or measured with the clamp meter)
+# battery_i comes from the inverter screen if shown, or from a DC clamp meter in the same frame (§2.2).
+equipment_kind: inverter
+defaults: {max_age_s: 20, requires_steady: true}
+steady: {role: output_w, step_pct: 15, settle_s: 5}
+rules:
+  - id: inverter.dc_power_balance
+    description: Battery-side DC power covers AC output plus conversion and idle losses (discharging)
+    inputs: [battery_v, battery_i, output_w]
+    when: "battery_i > 0.5"
+    expected: "output_w / eta + idle_w"
+    observed: "battery_v * battery_i"
+    params: {eta: [0.85, 0.95]}
+    tolerance_pct: 15
+    tolerance_pct_low_load: 30          # below 15 % load, idle loss dominates and efficiency is poorly known
+    low_load_when: "output_w < 0.15 * rated_va"
+    severity_on_persist: warning
+
+  - id: inverter.load_pct_vs_va
+    description: The load percentage is apparent power over the nameplate rating
+    inputs: [load_pct, output_va]
+    expected: "load_pct / 100 * rated_va"
+    observed: "output_va"
+    tolerance_pct: 10
+
+  - id: inverter.power_factor_bound
+    description: Real power can't exceed apparent power (PF <= 1), with 3 % display slack
+    inputs: [output_w, output_va]
+    check: "output_w <= output_va * 1.03"
+
+  - id: inverter.power_factor_floor
+    description: Under real load, household PF stays above ~0.4; a lower W/VA means a misread (often /10)
+    inputs: [output_w, output_va]
+    when: "output_va > 0.1 * rated_va"
+    check: "output_w >= 0.4 * output_va"
+
+  - id: inverter.apparent_power
+    description: Output VA is AC volts times AC amps (only when AC current is displayed)
+    inputs: [ac_v, ac_i, output_va]
+    expected: "ac_v * ac_i"
+    observed: "output_va"
+    tolerance_pct: 10
+
+  - id: inverter.battery_voltage_band
+    description: Battery voltage sits inside the nominal system band
+    inputs: [battery_v]
+    requires_steady: false
+    check: "0.80 * nominal_v <= battery_v <= 1.25 * nominal_v"
+    severity_on_persist: critical
+
+  - id: inverter.output_frequency
+    description: 50 Hz output (Nigeria)
+    inputs: [ac_hz]
+    requires_steady: false
+    check: "49.0 <= ac_hz <= 51.0"
+
+  - id: inverter.output_voltage
+    description: 230 V nominal single-phase output
+    inputs: [ac_v]
+    requires_steady: false
+    check: "200 <= ac_v <= 250"

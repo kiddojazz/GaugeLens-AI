@@ -1,0 +1,54 @@
+networks:
+  gaugelens_net:
+    driver: bridge
+
+volumes:
+  pgdata: {}
+  evidence: {}
+
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: gaugelens-db
+    environment:
+      POSTGRES_USER: gaugelens
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: gaugelens
+    ports:
+      - "127.0.0.1:${DB_HOST_PORT:-5433}:5432"   # 5433 on the host: a native Windows PostgreSQL already uses 5432
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [gaugelens_net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gaugelens -d gaugelens"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gaugelens-api
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://gaugelens:${POSTGRES_PASSWORD}@db:5432/gaugelens
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./backend:/app/backend          # hot reload in dev
+      - ./cache:/app/cache              # model-response cache shared with the host CLI
+      - evidence:/app/evidence
+    command: ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [gaugelens_net]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

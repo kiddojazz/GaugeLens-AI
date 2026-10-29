@@ -1,0 +1,14 @@
+fastapi==0.143.0
+uvicorn[standard]==0.54.0
+pydantic>=2.7,<3
+httpx==0.28.1            # Meta Model API, Meta Graph API (Messenger), media downloads
+asyncpg>=0.30
+pillow>=10.4
+numpy>=1.26
+opencv-python-headless>=4.10   # video decoding + frame sampling (bundles its own FFmpeg on Windows)
+python-multipart>=0.0.9  # video uploads
+azure-storage-blob==12.24.0   # evidence in Azure Blob Storage (EVIDENCE_STORE=blob)
+pyyaml>=6.0              # physics rule packs (backend/rules/*.yaml)
+
+# tests
+pytest==9.1.1

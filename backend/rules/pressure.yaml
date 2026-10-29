@@ -1,0 +1,15 @@
+# Analog pressure gauge (docs/04 §2.6): no physics partner, temporal plausibility only.
+# min_value / max_value come from the gauge's calibration in the registry.
+equipment_kind: pressure_system
+defaults: {max_age_s: 20, requires_steady: false}
+constants: {max_rate_per_s: 2.0}
+rules:
+  - id: pressure.within_sweep
+    inputs: [pressure]
+    check: "min_value <= pressure <= max_value"
+
+  - id: pressure.rate_limit
+    description: Needles don't teleport
+    kind: transition
+    inputs: [pressure]
+    check: "abs(delta(pressure)) / delta_t <= max_rate_per_s"

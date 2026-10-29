@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GaugeLens Mock Panel</title>
+<!--
+  Synthetic inverter + DC clamp meter for day-0 testing. Film it with a phone; every displayed value is
+  logged as ground truth (CSV in readings.csv format). Values obey the same physics as
+  docs/04_physics_rules_spec.md: P_dc = P_ac / eta + P_idle, W <= VA, load% = VA / rated_VA.
+  Results from this page are SYNTHETIC: development only, never the held-out test set.
+
+  Keys:  R record/stop log · L kettle on/off · F hidden DC fault · G glare · S ghost segments off/faint/strong
+         N next page · P hold page · 1/2/3 speed 1x/30x/120x · D download CSV · H hide controls
+-->
+<style>
+  @font-face {
+    font-family: "DSEG7";
+    src: url("https://cdn.jsdelivr.net/npm/dseg@0.46.0/fonts/DSEG7-Classic/DSEG7Classic-Bold.woff2") format("woff2");
+  }
+  :root {
+    --bg: #111214; --bezel: #2a2c30; --bezel-edge: #3b3e44; --lcd: #9eb398; --seg: #18241a;
+    --ghost: rgba(24, 36, 26, 0.04); --label: #c9cdd3; --clamp: #e3b21a; --clamp-dark: #2b2b2b;
+    --accent: #4fb38a; --text: #e6e8eb; --muted: #8b9096;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+         font-family: system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; flex-direction: column;
+         align-items: center; justify-content: center; gap: 24px; padding: 16px; }
+  .rig { display: flex; gap: 40px; align-items: center; flex-wrap: wrap; justify-content: center; }
+  .seg { font-family: "DSEG7", "Courier New", monospace; position: relative; display: inline-block; line-height: 1; }
+  .seg .ghost { position: absolute; inset: 0; color: var(--ghost); }
+  .seg .live { position: relative; color: var(--seg); }
+
+  .inverter { background: var(--bezel); border: 2px solid var(--bezel-edge); border-radius: 18px; padding: 22px 26px 26px; }
+  .brand { color: var(--label); font-size: 14px; letter-spacing: .12em; margin-bottom: 14px; display: flex; justify-content: space-between; }
+  .lcd { position: relative; overflow: hidden; background: var(--lcd); border-radius: 8px; width: min(640px, 86vw);
+         padding: 18px 22px 20px; box-shadow: inset 0 0 18px rgba(0,0,0,.35); color: var(--seg); }
+  .pages { display: flex; gap: 14px; font-weight: 700; font-size: 18px; letter-spacing: .06em; }
+  .pages span { opacity: .15; } .pages span.on { opacity: 1; }
+  .main { display: flex; align-items: baseline; justify-content: flex-end; gap: 10px; margin: 14px 0 8px; }
+  .main .seg { font-size: clamp(56px, 12vw, 110px); }
+  .unit { font-weight: 800; font-size: 34px; min-width: 64px; }
+  .subs { display: flex; justify-content: space-between; gap: 18px; }
+  .sub { display: flex; align-items: baseline; gap: 8px; }
+  .sub .seg { font-size: clamp(28px, 6vw, 46px); }
+  .sub .unit { font-size: 22px; min-width: 36px; }
+  .glare::after { content: ""; position: absolute; inset: 0; pointer-events: none;
+                  background: radial-gradient(ellipse 34% 60% at 38% 46%, rgba(255,255,255,.88), rgba(255,255,255,.35) 45%, transparent 70%); }
+
+  .clamp { background: var(--clamp); border-radius: 22px 22px 30px 30px; padding: 20px 18px 30px; width: 230px;
+           border: 3px solid #b88d0c; }
+  .clamp .jaw { height: 46px; border: 10px solid var(--clamp-dark); border-bottom: none; border-radius: 60px 60px 0 0;
+                margin: -6px 26px 14px; }
+  .clamp .lcd { width: auto; padding: 12px 14px; }
+  .clamp .main { margin: 4px 0; }
+  .clamp .main .seg { font-size: 54px; }
+  .clamp .unit { font-size: 22px; min-width: 0; }
+  .clamp .mode { font-weight: 800; font-size: 14px; color: var(--seg); }
+  .clamp .name { text-align: center; color: var(--clamp-dark); font-weight: 800; margin-top: 12px; letter-spacing: .1em; }
+
+  .rec { position: fixed; top: 10px; left: 12px; font: 600 15px ui-monospace, Consolas, monospace; color: #ff5a5a; }
+  .controls { width: min(980px, 100%); background: #1b1d21; border: 1px solid #2c2f35; border-radius: 12px; padding: 12px 14px;
+              display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 14px; }
+  .controls button { background: #262a30; color: var(--text); border: 1px solid #3a3f47; border-radius: 8px; padding: 7px 10px; cursor: pointer; }
+  .controls button.on { border-color: var(--accent); color: var(--accent); }
+  .controls input { background: #111; color: var(--text); border: 1px solid #3a3f47; border-radius: 8px; padding: 6px 8px; width: 190px; }
+  .status { color: var(--muted); margin-left: auto; font-family: ui-monospace, Consolas, monospace; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+  <div class="rec hidden" id="rec">● REC T+0.0s</div>
+
+  <div class="rig">
+    <div class="inverter">
+      <div class="brand"><span>MOCK INVERTER</span><span>3.5 kVA · 24 V</span></div>
+      <div class="lcd" id="lcd">
+        <div class="pages"><span data-p="BATT">BATT</span><span data-p="OUTPUT">OUTPUT</span><span data-p="AC OUT">AC OUT</span></div>
+        <div class="main"><span class="seg" id="mainVal"></span><span class="unit" id="mainUnit"></span></div>
+        <div class="subs">
+          <div class="sub"><span class="seg" id="sub1Val"></span><span class="unit" id="sub1Unit"></span></div>
+          <div class="sub"><span class="seg" id="sub2Val"></span><span class="unit" id="sub2Unit"></span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="clamp">
+      <div class="jaw"></div>
+      <div class="lcd">
+        <div class="mode">DC A</div>
+        <div class="main"><span class="seg" id="clampVal"></span><span class="unit">A</span></div>
+      </div>
+      <div class="name">CLAMP METER</div>
+    </div>
+  </div>
+
+  <div class="controls" id="controls">
+    <button id="bRec">R · Record log</button>
+    <button id="bKettle">L · Kettle</button>
+    <button id="bFault">F · Hidden DC fault</button>
+    <button id="bGlare">G · Glare</button>
+    <button id="bHold">P · Hold page</button>
+    <button id="bNext">N · Next page</button>
+    <button id="bGhost">S · Ghost faint</button>
+    <button id="bSpeed">Speed 1×</button>
+    <button id="bCsv">D · CSV</button>
+    <input id="clipId" aria-label="Clip id">
+    <span class="status" id="status"></span>
+  </div>
+
+<script>
+(() => {
+  // ---- equipment (matches an `equipment` row: rated_va, nominal_battery_v, idle_w)
+  const RATED_VA = 3500, IDLE_W = 35, ETA = 0.92, CAPACITY_WH = 24 * 200, R_INT = 0.025;
+  const KETTLE_W = 1500, FAULT_W = 250, PAGE_SECONDS = 4, REFRESH_MS = 1000;
+  const PAGES = ["BATT", "OUTPUT", "AC OUT"];
+
+  const s = { soc: 0.86, base: 290, kettle: false, fault: false, speed: 1, page: 0, hold: false,
+              pageClock: 0, recording: false, recStart: 0, rows: [], shown: {} };
+  const $ = id => document.getElementById(id);
+  const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  $("clipId").value = `${today}_mockpanel_01`;
+
+  // URL options for scripted screenshots: ?seed=7&page=0..2&ghost=off|faint|strong&controls=off
+  // The same seed gives the same values, so a screenshot and a --dump-dom of it share ground truth.
+  const params = new URLSearchParams(location.search);
+  const mulberry32 = a => () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+                                  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  const rand = params.get("seed") ? mulberry32(Number(params.get("seed"))) : Math.random;
+  if (params.get("seed")) { s.base = 180 + rand() * 240; s.soc = 0.3 + rand() * 0.65; s.kettle = rand() < 0.3; }
+  if (params.get("fault") === "1") s.fault = true;               // hidden 250 W DC load (a SIMULATED fault)
+  const noise = a => (rand() * 2 - 1) * a;
+  const fix = (v, d) => v.toFixed(d);
+
+  function physics() {
+    s.base = Math.min(420, Math.max(180, s.base + noise(4)));          // slow natural drift
+    const pOut = s.base + (s.kettle ? KETTLE_W : 0);
+    const pf = s.kettle ? 0.97 : 0.86;
+    const va = pOut / pf;
+    const pDc = pOut / ETA + IDLE_W + (s.fault ? FAULT_W : 0);          // fault: unmetered DC load on the battery bus
+    const ocv = 23.0 + 2.8 * s.soc;
+    const v = (ocv + Math.sqrt(ocv * ocv - 4 * R_INT * pDc)) / 2;
+    return { pOut, va, pDc, v, i: pDc / v, ocv };
+  }
+
+  function seg(el, text) {              // ghost "8" segments behind the live digits, like a real LCD
+    el.innerHTML = `<span class="ghost">${text.replace(/[0-9]/g, "8").replace(/!/g, "8")}</span><span class="live">${text}</span>`;
+  }
+  const pad = (text, width) => "!".repeat(Math.max(0, width - text.replace(".", "").length)) + text;   // "!" = blank digit in DSEG
+
+  function show(fields) {               // fields: [elId, unitElId|null, text, unit, role]
+    const values = {};
+    for (const [el, unitEl, text, unit, role, width] of fields) {
+      seg($(el), pad(text, width));
+      if (unitEl) $(unitEl).textContent = unit;
+      values[role] = { text, unit };
+    }
+    return values;
+  }
+
+  function render() {
+    const p = physics();
+    s.soc = Math.max(0.05, s.soc - (p.pDc * (REFRESH_MS / 1000) * s.speed) / 3600 / CAPACITY_WH);
+    if (!s.hold) { s.pageClock += REFRESH_MS / 1000; if (s.pageClock >= PAGE_SECONDS) { s.pageClock = 0; s.page = (s.page + 1) % PAGES.length; } }
+    const page = PAGES[s.page];
+    document.querySelectorAll(".pages span").forEach(sp => sp.classList.toggle("on", sp.dataset.p === page));
+
+    let shown;
+    if (page === "BATT") {
+      shown = show([["mainVal", "mainUnit", fix(p.v, 1), "V", "battery_v", 3],
+                    ["sub1Val", "sub1Unit", String(Math.round(s.soc * 100)), "%", "battery_soc_pct", 3],
+                    ["sub2Val", "sub2Unit", "", "", "", 3]]);
+    } else if (page === "OUTPUT") {
+      shown = show([["mainVal", "mainUnit", String(Math.round(p.pOut)), "W", "output_w", 4],
+                    ["sub1Val", "sub1Unit", String(Math.round(p.va)), "VA", "output_va", 4],
+                    ["sub2Val", "sub2Unit", String(Math.round(p.va / RATED_VA * 100)), "%", "load_pct", 3]]);
+    } else {
+      shown = show([["mainVal", "mainUnit", String(Math.round(230 + noise(1.5))), "V", "ac_v", 3],
+                    ["sub1Val", "sub1Unit", fix(50 + noise(0.06), 1), "Hz", "ac_hz", 3],
+                    ["sub2Val", "sub2Unit", "", "", "", 3]]);
+    }
+    delete shown[""];
+    seg($("clampVal"), pad(fix(p.i + noise(0.05), 1), 3));
+    shown.battery_i = { text: $("clampVal").querySelector(".live").textContent.replace(/!/g, ""), unit: "A" };
+
+    if (s.recording) {
+      const t = (performance.now() - s.recStart) / 1000;
+      const notes = `page=${page};kettle=${s.kettle};fault=${s.fault};speed=${s.speed}x;simulated=true`;
+      for (const [role, { text, unit }] of Object.entries(shown)) {
+        const label = role === "battery_i" ? "clamp_dc" : "inverter_main";
+        s.rows.push([$("clipId").value, t.toFixed(1), label, role, text, unit, "mock_panel", "generator", notes]);
+      }
+    }
+    $("status").textContent = `SoC ${(s.soc * 100).toFixed(1)}% · P_dc ${p.pDc.toFixed(0)} W · rows ${s.rows.length}`;
+  }
+
+  function tick() {
+    if (s.recording) $("rec").textContent = `● REC T+${((performance.now() - s.recStart) / 1000).toFixed(1)}s`;
+    requestAnimationFrame(tick);
+  }
+
+  function toggle(key, btn) { s[key] = !s[key]; $(btn).classList.toggle("on", s[key]); render(); }
+  function record() {
+    s.recording = !s.recording;
+    if (s.recording) { s.rows = []; s.recStart = performance.now(); }
+    $("rec").classList.toggle("hidden", !s.recording);
+    $("bRec").classList.toggle("on", s.recording);
+  }
+  function speed() { s.speed = s.speed === 1 ? 30 : s.speed === 30 ? 120 : 1; $("bSpeed").textContent = `Speed ${s.speed}×`; }
+  function glare() { $("lcd").classList.toggle("glare"); $("bGlare").classList.toggle("on"); }
+  function next() { s.page = (s.page + 1) % PAGES.length; s.pageClock = 0; render(); }
+  const GHOSTS = [["faint", 0.04], ["strong", 0.10], ["off", 0]];
+  let ghost = 0;
+  function ghosts() {
+    ghost = (ghost + 1) % GHOSTS.length;
+    document.documentElement.style.setProperty("--ghost", `rgba(24, 36, 26, ${GHOSTS[ghost][1]})`);
+    $("bGhost").textContent = `S · Ghost ${GHOSTS[ghost][0]}`;
+  }
+  if (GHOSTS.some(([name]) => name === params.get("ghost"))) {
+    while (GHOSTS[ghost][0] !== params.get("ghost")) ghosts();
+  }
+  if (params.get("page")) { s.page = Number(params.get("page")) % PAGES.length; s.hold = true; }
+  if (params.get("controls") === "off") $("controls").classList.add("hidden");
+  function csv() {
+    const header = "clip_id,t_seconds,instrument_label,field,true_value,unit,source,labeller,notes";
+    const body = s.rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const a = Object.assign(document.createElement("a"), {
+      href: URL.createObjectURL(new Blob([header + "\n" + body + "\n"], { type: "text/csv" })),
+      download: `${$("clipId").value}_truth.csv` });
+    a.click(); URL.revokeObjectURL(a.href);
+  }
+
+  $("bRec").onclick = record; $("bKettle").onclick = () => toggle("kettle", "bKettle");
+  $("bFault").onclick = () => toggle("fault", "bFault"); $("bGlare").onclick = glare;
+  $("bHold").onclick = () => toggle("hold", "bHold"); $("bNext").onclick = next;
+  $("bSpeed").onclick = speed; $("bCsv").onclick = csv; $("bGhost").onclick = ghosts;
+  document.addEventListener("keydown", e => {
+    if (e.target.tagName === "INPUT") return;
+    const k = e.key.toLowerCase();
+    ({ r: record, l: () => toggle("kettle", "bKettle"), f: () => toggle("fault", "bFault"), g: glare,
+       n: next, s: ghosts, p: () => toggle("hold", "bHold"), d: csv, h: () => $("controls").classList.toggle("hidden"),
+       "1": () => { s.speed = 120; speed(); }, "2": () => { s.speed = 1; speed(); }, "3": () => { s.speed = 30; speed(); } }[k] || (() => {}))();
+  });
+
+  render(); tick();
+  if (!params.get("seed")) setInterval(render, REFRESH_MS);   // seeded = one frozen frame, so screenshot == DOM truth
+})();
+</script>
+</body>
+</html>

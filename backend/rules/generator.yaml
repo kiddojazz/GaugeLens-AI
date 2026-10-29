@@ -1,0 +1,44 @@
+# Generator panel (docs/04 §2.5). Most Lagos panels show V, Hz and maybe A/kW/hours; rpm rarely.
+equipment_kind: generator
+defaults: {max_age_s: 20, requires_steady: true}
+steady: {role: ac_i, step_pct: 15, settle_s: 8}     # governors take a few seconds to settle
+constants: {poles: 4}
+rules:
+  - id: generator.freq_band
+    description: Mechanical governors sit at ~52-53 Hz at no load and droop towards 50 Hz under load
+    inputs: [hz]
+    requires_steady: false
+    check: "48.5 <= hz <= 53.0"
+
+  - id: generator.voltage_band
+    inputs: [ac_v]
+    requires_steady: false
+    check: "200 <= ac_v <= 250"
+
+  - id: generator.governor_droop
+    description: Frequency must not rise when the load rises
+    kind: transition
+    inputs: [hz, ac_i]
+    requires_steady: false
+    check: "not (delta(ac_i) > 0 and delta(hz) > 0.3)"
+
+  - id: generator.real_power
+    description: kW ~ V x A x PF (only if kW and A meters exist)
+    inputs: [ac_v, ac_i, kw]
+    expected: "ac_v * ac_i * pf / 1000"
+    observed: "kw"
+    params: {pf: [0.8, 1.0]}
+    tolerance_pct: 10
+
+  - id: generator.freq_rpm
+    description: f = rpm x poles / 120 (only if a tachometer is shown)
+    inputs: [rpm, hz]
+    expected: "rpm * poles / 120"
+    observed: "hz"
+    tolerance_pct: 4
+
+  - id: generator.hour_meter_monotonic
+    kind: transition
+    inputs: [hours]
+    requires_steady: false
+    check: "delta(hours) >= 0"

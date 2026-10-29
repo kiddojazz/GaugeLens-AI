@@ -1,0 +1,21 @@
+# PWM solar charge controller (docs/04 §2.4): it switches the panel onto the battery, so currents match
+# and PV voltage is pulled down near battery voltage. The MPPT power rule does NOT hold here.
+equipment_kind: charge_controller
+controller_type: pwm
+defaults: {max_age_s: 20, requires_steady: true}
+steady: {role: pv_i, step_pct: 20, settle_s: 5}
+rules:
+  - id: cc_pwm.current_passthrough
+    description: Charge current equals PV current
+    inputs: [pv_i, charge_i]
+    when: "pv_i > 0.3"
+    expected: "pv_i"
+    observed: "charge_i"
+    tolerance_pct: 10
+
+  - id: cc_pwm.pv_pulled_to_battery
+    description: While charging, PV voltage sits just above battery voltage
+    inputs: [pv_v, battery_v, charge_i]
+    when: "charge_i > 0.3"
+    requires_steady: false
+    check: "battery_v <= pv_v <= battery_v + 3.0"
