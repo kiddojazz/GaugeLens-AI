@@ -3,7 +3,9 @@ errors returned as text (GridIQ style), and every result carries the IDs the age
 view_frame returns text; its image is attached by the loop as a user message (images are only accepted in
 user messages)."""
 
+import asyncio
 import json
+import logging
 from dataclasses import dataclass
 
 MAX_ROWS = 120
@@ -39,6 +41,9 @@ TOOL_SPECS = [
 ]
 
 
+log = logging.getLogger(__name__)
+
+
 @dataclass
 class ToolResult:
     text: str
@@ -70,6 +75,9 @@ class AgentTools:
             return await handler(**args)
         except TypeError as exc:
             return ToolResult(f"TOOL ERROR: bad arguments for {name}: {exc}")
+        except Exception as exc:  # noqa: BLE001 - one failed lookup must not end the agent: it can work around it
+            log.warning("agent tool %s failed: %s: %s", name, type(exc).__name__, exc)
+            return ToolResult(f"TOOL ERROR: {name} failed ({type(exc).__name__}); try another way or say what is unknown")
 
     async def get_readings(self, role: str, from_t: float | None = None, to_t: float | None = None) -> ToolResult:
         rows = await self.pool.fetch(
@@ -143,7 +151,7 @@ class AgentTools:
         text = json.dumps({"frame": f"frame:{frame_id}", "t": float(row["t_offset_s"]), "readings_on_this_frame": [
             {"id": f"reading:{r['reading_id']}", "role": r["physics_role"], "raw_text": r["raw_text"], "unit": r["unit"],
              "status": r["status"]} for r in readings], "image": "attached in the next message"})
-        return ToolResult(text, image=self.evidence.read(row["image_uri"]), frame_id=frame_id,
+        return ToolResult(text, image=await asyncio.to_thread(self.evidence.read, row["image_uri"]), frame_id=frame_id,
                           image_uri=row["image_uri"])
 
     async def search_manual(self, query: str) -> ToolResult:

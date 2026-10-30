@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS clips (
   equipment_id   TEXT REFERENCES equipment(equipment_id),
   recorded_at    TIMESTAMPTZ,
   source_uri     TEXT NOT NULL,
-  source_channel TEXT NOT NULL DEFAULT 'web' CHECK (source_channel IN ('web','whatsapp','seed','replay')),
+  source_channel TEXT NOT NULL DEFAULT 'web' CHECK (source_channel IN ('web','seed','replay','eval','imported')),
   fps_sampled    NUMERIC,
   status         TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','processing','done','failed')),
   is_demo_replay BOOLEAN NOT NULL DEFAULT false,
@@ -185,8 +185,7 @@ CREATE TABLE IF NOT EXISTS model_calls (
 -- Work queue (docs/12_jobs_and_events.md)
 CREATE TABLE IF NOT EXISTS jobs (
   job_id        TEXT PRIMARY KEY,
-  kind          TEXT NOT NULL CHECK (kind IN ('process_clip','diagnose','run_eval','demo_replay',
-                                              'whatsapp_ingest','notify')),
+  kind          TEXT NOT NULL CHECK (kind IN ('process_clip','diagnose','run_eval','demo_replay')),
   payload       JSONB NOT NULL,
   status        TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','done','failed','dead')),
   attempts      SMALLINT NOT NULL DEFAULT 0,
@@ -215,7 +214,7 @@ CREATE INDEX IF NOT EXISTS clip_events_clip ON clip_events (clip_id, event_id);
 -- Eval scenarios seed their own clips; the normal UI lists leave them out.
 ALTER TABLE clips DROP CONSTRAINT IF EXISTS clips_source_channel_check;
 ALTER TABLE clips ADD CONSTRAINT clips_source_channel_check
-  CHECK (source_channel IN ('web','whatsapp','messenger','seed','replay','eval'));
+  CHECK (source_channel IN ('web','seed','replay','eval','imported'));
 
 -- Agent traces, shaped like OpenTelemetry spans (GenAI semantic conventions in `attributes`), so they can be
 -- exported over OTLP (Langfuse, any OTEL backend) later without changing what is recorded.
@@ -289,7 +288,7 @@ CREATE TABLE IF NOT EXISTS eval_results (
   PRIMARY KEY (eval_run_id, scenario_id)
 );
 
--- Questions about a clip, asked next to the footage (web now, WhatsApp follow-ups later). One conversation
+-- Questions about a clip, asked next to the footage. One conversation
 -- per clip; a message may carry the frame the user was looking at and the anomaly page it came from.
 CREATE TABLE IF NOT EXISTS chat_messages (
   message_id  TEXT PRIMARY KEY,
@@ -302,7 +301,6 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   verified    BOOLEAN,                        -- assistant: every cited ID and number checked out
   problems    TEXT[] NOT NULL DEFAULT '{}',
   run_id      TEXT,                           -- assistant: the agent trace
-  channel     TEXT NOT NULL DEFAULT 'web',
   cleared     BOOLEAN NOT NULL DEFAULT false, -- "new conversation" hides earlier turns (kept for the record)
   created_at  TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
@@ -311,33 +309,47 @@ CREATE INDEX IF NOT EXISTS chat_messages_clip ON chat_messages (clip_id, created
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS clip_id TEXT;
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS title TEXT;     -- e.g. the chat question
 
--- Messaging channels (WhatsApp, Messenger): every message in and out (inbound IDs dedupe Meta's retries);
--- a clip remembers which channel it came from (source_channel) and who to reply to (reply_to).
-DO $$ BEGIN                                            -- earlier versions: WhatsApp-only names
-  IF to_regclass('whatsapp_messages') IS NOT NULL AND to_regclass('channel_messages') IS NULL THEN
-    ALTER TABLE whatsapp_messages RENAME TO channel_messages;
-    ALTER TABLE channel_messages RENAME COLUMN wa_message_id TO message_id;
-    ALTER TABLE channel_messages RENAME COLUMN wa_number TO address;
-  END IF;
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'clips' AND column_name = 'wa_number')
-     AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'clips' AND column_name = 'reply_to') THEN
-    ALTER TABLE clips RENAME COLUMN wa_number TO reply_to;
-  END IF;
-END $$;
-CREATE TABLE IF NOT EXISTS channel_messages (
-  message_id    TEXT PRIMARY KEY,
-  channel       TEXT NOT NULL DEFAULT 'whatsapp',
-  direction     TEXT NOT NULL CHECK (direction IN ('in','out')),
-  address       TEXT NOT NULL,                  -- WhatsApp number or Messenger PSID
-  type          TEXT NOT NULL,
-  body          JSONB NOT NULL,
-  clip_id       TEXT,
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+-- Automatic onboarding: equipment identified from a clip (nameplate + displays) registers itself.
+ALTER TABLE equipment DROP CONSTRAINT IF EXISTS equipment_kind_check;
+ALTER TABLE equipment ADD CONSTRAINT equipment_kind_check
+  CHECK (kind IN ('inverter','charge_controller','generator','meter','pressure_system','clamp_meter',
+                  'multimeter','other'));
+ALTER TABLE equipment ADD COLUMN IF NOT EXISTS profile JSONB;   -- brand, model, ratings, limits, evidence, source
+ALTER TABLE clips ADD COLUMN IF NOT EXISTS identification JSONB; -- what the clip was identified as, and how
+
+-- Who can see what. Guests get a session that lives only in their open page: when it ends (refresh, close, 30 min
+-- idle) everything they uploaded is deleted. Accounts keep their clips across visits. Admins see everything.
+-- Clips and equipment without an owner (seed, eval, older rows) are visible to admins only.
+CREATE TABLE IF NOT EXISTS users (
+  user_id       TEXT PRIMARY KEY,
+  email         TEXT NOT NULL UNIQUE,            -- stored lower-case
+  password_hash TEXT NOT NULL,                   -- scrypt$n$r$p$salt$hash
+  role          TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user','admin')),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_login_at TIMESTAMPTZ
 );
-ALTER TABLE channel_messages ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'whatsapp';
-DROP INDEX IF EXISTS whatsapp_messages_number;
-CREATE INDEX IF NOT EXISTS channel_messages_address ON channel_messages (channel, address, created_at);
-ALTER TABLE clips ADD COLUMN IF NOT EXISTS reply_to TEXT;
-ALTER TABLE clips DROP CONSTRAINT IF EXISTS clips_source_channel_check;
-ALTER TABLE clips ADD CONSTRAINT clips_source_channel_check
-  CHECK (source_channel IN ('web','whatsapp','messenger','seed','replay','eval'));
+
+CREATE TABLE IF NOT EXISTS sessions (
+  session_id    TEXT PRIMARY KEY,
+  token_hash    TEXT NOT NULL UNIQUE,            -- sha256 of the bearer token; the token itself is never stored
+  kind          TEXT NOT NULL CHECK (kind IN ('guest','user')),
+  user_id       TEXT REFERENCES users(user_id),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at    TIMESTAMPTZ,                     -- accounts: sliding expiry; guests: idle timeout instead
+  ended_at      TIMESTAMPTZ,
+  end_reason    TEXT,                            -- left | idle | logout | expired | signed_in
+  purged_at     TIMESTAMPTZ                      -- guest data deleted
+);
+CREATE INDEX IF NOT EXISTS sessions_open ON sessions (kind, ended_at, last_seen_at);
+
+ALTER TABLE clips ADD COLUMN IF NOT EXISTS owner_user_id TEXT;
+ALTER TABLE clips ADD COLUMN IF NOT EXISTS owner_session_id TEXT;
+ALTER TABLE equipment ADD COLUMN IF NOT EXISTS owner_user_id TEXT;
+ALTER TABLE equipment ADD COLUMN IF NOT EXISTS owner_session_id TEXT;
+CREATE INDEX IF NOT EXISTS clips_owner_session ON clips (owner_session_id);
+CREATE INDEX IF NOT EXISTS clips_owner_user ON clips (owner_user_id);
+
+-- Photo clips: one or more photos instead of a video. {"kind": "photos", "timed": bool, "photos": [{"uri", "t"}]}
+-- (t = seconds from the first photo: real capture times when every photo had one, else 300 s apart).
+ALTER TABLE clips ADD COLUMN IF NOT EXISTS media JSONB;

@@ -7,6 +7,8 @@
     python -m backend.app.cli read photo.jpg --box 410,220,380,160    # crop x,y,w,h first
     python -m backend.app.cli process data/mock_clips/mock_day1.mp4 --equipment inv_mock \\
         --truth data/mock_clips/mock_day1_truth.csv       # day-1 gate: clip -> readings in the DB
+    python -m backend.app.cli user you@example.com --admin               # create an admin (asks for the password)
+    python -m backend.app.cli user you@example.com --admin --db-env AZURE_DATABASE_URL   # ... in the hosted DB
 """
 
 import argparse
@@ -295,41 +297,6 @@ async def cmd_eval(settings, args) -> int:
         await pool.close()
 
 
-async def cmd_whatsapp_check(settings, args) -> int:
-    """Checks the WhatsApp settings against Meta (token never printed); --to sends the hello_world template."""
-    import httpx
-
-    missing = [k for k in ("whatsapp_access_token", "whatsapp_phone_number_id", "webhook_verify_token")
-               if not getattr(settings, k)]
-    print("settings: " + ("all set" if not missing else "missing " + ", ".join(m.upper() for m in missing)))
-    print(f"app secret: {'set (webhook signatures checked)' if settings.meta_app_secret else 'NOT set (signatures not checked)'}")
-    if missing:
-        return 1
-    base = f"https://graph.facebook.com/{settings.graph_version}"
-    auth = {"Authorization": f"Bearer {settings.whatsapp_access_token}"}
-    async with httpx.AsyncClient(timeout=30) as http:
-        r = await http.get(f"{base}/{settings.whatsapp_phone_number_id}", headers=auth,
-                           params={"fields": "display_phone_number,verified_name,quality_rating"})
-        if r.status_code != 200:
-            error = r.json().get("error", {})
-            print(f"token check FAILED: {error.get('code')} {error.get('message')}")
-            if error.get("code") == 190:
-                print("  -> the access token is wrong or expired: generate a new one in API Setup and update .env")
-            return 1
-        info = r.json()
-        print(f"token OK: sending from {info.get('display_phone_number')} ({info.get('verified_name')})")
-        if args.to:
-            r = await http.post(f"{base}/{settings.whatsapp_phone_number_id}/messages", headers=auth, json={
-                "messaging_product": "whatsapp", "to": args.to.lstrip("+"), "type": "template",
-                "template": {"name": "hello_world", "language": {"code": "en_US"}}})
-            body = r.json()
-            if r.status_code != 200:
-                print(f"send FAILED: {body.get('error', {}).get('code')} {body.get('error', {}).get('message')}")
-                return 1
-            print(f"hello_world accepted by Meta (id {body['messages'][0]['id']}). Delivery status arrives on the webhook.")
-    return 0
-
-
 def cmd_evidence_sync(settings, args) -> int:
     """Uploads local evidence files the blob container doesn't have yet (same URIs, so DB rows don't change)."""
     from .evidence.store import BlobEvidenceStore
@@ -359,6 +326,57 @@ def cmd_evidence_sync(settings, args) -> int:
     return 0
 
 
+async def cmd_user(args) -> int:
+    """Creates an account, or with --admin promotes an existing one. The password is asked for, never an argument."""
+    import getpass
+    import os
+
+    from . import access
+    from .config import load_dotenv
+    from .db.init_db import init
+    from .db.pool import create_pool
+
+    load_dotenv()
+    ask = (lambda prompt: os.environ.get(args.password_env, "")) if args.password_env else getpass.getpass
+    url = os.environ.get(args.db_env)
+    if not url:
+        print(f"{args.db_env} is not set.")
+        return 1
+    await init(url)                                       # make sure the users table exists
+    pool = await create_pool(url)
+    try:
+        role = "admin" if args.admin else "user"
+        existing = await pool.fetchval("SELECT user_id FROM users WHERE email = $1", args.email.strip().lower())
+        if existing:
+            if args.admin:
+                await pool.execute("UPDATE users SET role = 'admin' WHERE user_id = $1", existing)
+            if args.reset_password:
+                password = ask("New password: ")
+                if len(password) < access.MIN_PASSWORD:
+                    print(f"Use at least {access.MIN_PASSWORD} characters.")
+                    return 1
+                await pool.execute("UPDATE users SET password_hash = $2 WHERE user_id = $1", existing,
+                                   access.hash_password(password))
+                await pool.execute("UPDATE sessions SET ended_at = now(), end_reason = 'logout' "
+                                   "WHERE user_id = $1 AND ended_at IS NULL", existing)
+            print(f"{args.email}: account exists{', now admin' if args.admin else ''}"
+                  f"{', password changed (signed out everywhere)' if args.reset_password else ''}.")
+            return 0
+        password = ask("Password: ")
+        if password != ask("Again: "):
+            print("The passwords don't match.")
+            return 1
+        try:
+            await access.create_user(pool, args.email, password, role)
+        except (ValueError, LookupError) as exc:
+            print(exc)
+            return 1
+        print(f"{args.email}: {role} account created.")
+        return 0
+    finally:
+        await pool.close()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="GaugeLens day-0 tools.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -374,15 +392,21 @@ def main() -> int:
     inventory.add_argument("--context", default="", help="Site description, e.g. '11/0.415 kV distribution substation'.")
     process = sub.add_parser("process", help="Day-1 gate: upload a clip, run the worker, score vs truth.")
     process.add_argument("video")
-    process.add_argument("--equipment", required=True, help="equipment_id, e.g. inv_mock")
+    process.add_argument("--equipment", default=None, help="equipment_id, e.g. inv_mock (default: identify it from the video)")
     process.add_argument("--truth", help="readings.csv-format ground truth to score against")
     process.add_argument("--simulated", action="store_true", help="label the clip as a SIMULATED (demo) fault")
     ev = sub.add_parser("eval", help="Run the agent evaluation scenarios (uses model credits).")
     ev.add_argument("--scenario", action="append", help="only this scenario (repeatable)")
-    wac = sub.add_parser("whatsapp-check", help="Check the WhatsApp token and number (optionally send hello_world).")
-    wac.add_argument("--to", help="also send the hello_world template to this number, e.g. 2348012345678")
     sync = sub.add_parser("evidence-sync", help="Upload local evidence/ files to the Azure Blob container.")
     sync.add_argument("--dry-run", action="store_true", help="list what would be uploaded")
+    user = sub.add_parser("user", help="Create an account (asks for the password), or make one an admin.")
+    user.add_argument("email")
+    user.add_argument("--admin", action="store_true", help="give the account admin rights (sees every clip)")
+    user.add_argument("--reset-password", action="store_true", help="set a new password for an existing account")
+    user.add_argument("--password-env", help="read the password from this environment variable (automation, "
+                                            "e.g. the e2e tests) instead of asking")
+    user.add_argument("--db-env", default="DATABASE_URL", help="the .env variable with the database URL "
+                                                              "(e.g. AZURE_DATABASE_URL for the hosted one)")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
     for stream in (sys.stdout, sys.stderr):        # Windows consoles default to cp1252 ("≤", "√" would crash)
@@ -393,10 +417,10 @@ def main() -> int:
     settings = get_settings()
     if args.command == "check":
         return cmd_check(settings)
-    if args.command == "whatsapp-check":
-        return asyncio.run(cmd_whatsapp_check(settings, args))
     if args.command == "evidence-sync":
         return cmd_evidence_sync(settings, args)
+    if args.command == "user":
+        return asyncio.run(cmd_user(args))
     missing = missing_settings(settings)
     if missing:
         print("Missing settings: " + ", ".join(missing) + " (copy .env.example to .env and fill them in)")

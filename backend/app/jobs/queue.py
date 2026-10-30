@@ -12,7 +12,7 @@ import asyncpg
 
 from ..ids import new_id
 
-KINDS = ("process_clip", "diagnose", "run_eval", "demo_replay", "whatsapp_ingest", "notify")
+KINDS = ("process_clip", "diagnose", "run_eval", "demo_replay")
 
 _CLAIM = """
 UPDATE jobs

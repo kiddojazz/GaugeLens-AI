@@ -16,4 +16,6 @@ web/node_modules/
 web/dist/
 web/e2e-report/
 web/e2e-results/
+web/e2e/.auth/
+web/test-results/
 **/.vite/

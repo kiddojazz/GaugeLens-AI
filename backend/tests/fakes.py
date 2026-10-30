@@ -51,3 +51,30 @@ class FakeRawClient:
     def __init__(self, responses: list):
         self.completions = FakeCompletions(responses)
         self.chat = SimpleNamespace(completions=self.completions)
+
+
+TEST_PASSWORD = "correct horse battery"
+
+
+def sign_in(client, database_url: str, email: str = "admin@test.local", role: str = "admin") -> dict:
+    """Signs a TestClient in (cookie) as a user with this role, creating the account if needed."""
+    import asyncio
+
+    import asyncpg
+
+    from backend.app.access import hash_password
+
+    async def make():
+        conn = await asyncpg.connect(database_url)
+        try:
+            await conn.execute(
+                """INSERT INTO users (user_id, email, password_hash, role) VALUES ($1, $2, $3, $4)
+                   ON CONFLICT (email) DO UPDATE SET role = EXCLUDED.role""",
+                f"usr_{role}_{abs(hash(email)) % 10**8}", email, hash_password(TEST_PASSWORD), role)
+        finally:
+            await conn.close()
+
+    asyncio.run(make())
+    response = client.post("/api/v1/auth/login", json={"email": email, "password": TEST_PASSWORD})
+    assert response.status_code == 200, response.text
+    return response.json()

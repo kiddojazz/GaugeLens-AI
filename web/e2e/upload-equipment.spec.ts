@@ -2,25 +2,50 @@ import { expect, sample, test } from "./fixtures";
 
 const VIDEO = { name: "test.mp4", mimeType: "video/mp4", buffer: Buffer.from("not really a video") };
 
-test("equipment list offers only primary equipment", async ({ page, request }) => {
+test("equipment defaults to automatic identification and lists only primary units", async ({ page, request }) => {
   const { equipment } = await sample(request);
   const primary = equipment.filter((e) => !e.linked_equipment_id);
   await page.goto("/#/upload");
-  const options = page.getByLabel("Equipment").locator("option:not([value=''])");
+  await expect(page.getByLabel("Equipment")).toHaveValue("auto");
+  const options = page.getByLabel("Equipment").locator("option:not([value='auto'])");
   await expect(options).toHaveCount(primary.length);
   for (const e of equipment.filter((e) => e.linked_equipment_id)) await expect(options.filter({ hasText: e.equipment_id })).toHaveCount(0);
 });
 
-test("upload is disabled until equipment and video are chosen", async ({ page, request }) => {
-  const primary = (await sample(request)).equipment.find((e) => !e.linked_equipment_id);
-  test.skip(!primary, "no equipment registered");
+test("only a video is needed: the equipment is identified when it is not chosen", async ({ page }) => {
+  let body = "";
+  await page.route("**/api/v1/clips", (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    body = route.request().postDataBuffer()?.toString("latin1") ?? "";
+    return route.fulfill({ status: 201, json: { clip_id: "clip_test", job_id: "job_test" } });
+  });
+  await page.route("**/api/v1/clips/clip_test**", (route) => route.fulfill({ status: 404, json: { detail: "test" } }));
   await page.goto("/#/upload");
   const submit = page.getByRole("button", { name: "Upload and process" });
   await expect(submit).toBeDisabled();
-  await page.getByLabel("Equipment").selectOption(primary.equipment_id);
-  await expect(submit).toBeDisabled();
   await page.getByLabel(/Video/).setInputFiles(VIDEO);
   await expect(submit).toBeEnabled();
+  await submit.click();
+  await expect(page).toHaveURL(/#\/clips\/clip_test$/);
+  expect(body).toMatch(/name="equipment_id"\s+auto/);
+});
+
+test("several photos can be uploaded as one clip", async ({ page }) => {
+  let body = "";
+  await page.route("**/api/v1/clips", (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    body = route.request().postDataBuffer()?.toString("latin1") ?? "";
+    return route.fulfill({ status: 201, json: { clip_id: "clip_test", job_id: "job_test" } });
+  });
+  await page.route("**/api/v1/clips/clip_test**", (route) => route.fulfill({ status: 404, json: { detail: "test" } }));
+  await page.goto("/#/upload");
+  const photo = (name: string) => ({ name, mimeType: "image/jpeg", buffer: Buffer.from("jpeg bytes") });
+  await page.getByLabel(/Video or photos/).setInputFiles([photo("page1.jpg"), photo("page2.jpg")]);
+  await expect(page.getByText("2 photos selected")).toBeVisible();
+  await page.getByRole("button", { name: "Upload and process" }).click();
+  await expect(page).toHaveURL(/#\/clips\/clip_test$/);
+  expect(body).toContain('filename="page1.jpg"');
+  expect(body).toContain('filename="page2.jpg"');
 });
 
 test("a successful upload opens the new clip", async ({ page, request }) => {

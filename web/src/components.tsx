@@ -1,4 +1,6 @@
-import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
+import { useAuth } from "./auth";
+import { Component, type ErrorInfo, type ReactNode } from "react";
 
 type Tone = "ok" | "warn" | "bad" | "info" | "neutral";
 
@@ -81,4 +83,35 @@ export function Sparkline({ values, width = 160, height = 36 }: { values: number
       <polyline points={points} fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinejoin="round" />
     </svg>
   );
+}
+
+/** Admin pages: everyone else gets a short explanation (the API refuses them too). */
+export function AdminOnly({ children }: { children: ReactNode }) {
+  const { me } = useAuth();
+  if (me?.kind === "admin") return <>{children}</>;
+  return <div className="empty">This page is for administrators. <Link to="/account">Sign in</Link> with an admin account.</div>;
+}
+
+/** A page that throws while rendering shows this, and the sidebar stays usable, instead of a blank app.
+ *  Not "reload": that would end a guest's session and delete their scans. */
+export class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("page failed to render", error, info.componentStack);
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <div className="error" role="alert">
+        <p style={{ marginTop: 0 }}><strong>This page couldn't be shown.</strong> Your data is safe; pick another page from the menu, or try again.</p>
+        <button className="btn" onClick={() => this.setState({ failed: false })}>Try again</button>
+      </div>
+    );
+  }
 }

@@ -2,6 +2,8 @@
 # rules are temporal and band checks. A display self-test (all segments lit, "88888888") is a classic trap.
 equipment_kind: meter
 defaults: {max_age_s: 60, requires_steady: false}
+# limits from the nameplate when the meter was identified (equipment profile), else these conservative defaults
+constants: {max_power_kw: 25.0, max_flow_m3h: 3.125}
 rules:
   - id: meter.energy_monotonic
     description: The cumulative energy register never goes down
@@ -11,10 +13,10 @@ rules:
     severity_on_persist: critical
 
   - id: meter.energy_rate
-    description: Energy can't grow faster than the meter's maximum current allows (100 A x 250 V = 25 kW)
+    description: Energy can't grow faster than the meter's rated maximum power (phases x volts x max amps)
     kind: transition
     inputs: [energy_kwh]
-    check: "delta(energy_kwh) / delta_t <= 25.0 / 3600"
+    check: "delta(energy_kwh) / delta_t <= max_power_kw / 3600"
 
   - id: meter.voltage_band
     description: Single-phase mains, 230 V nominal
@@ -40,7 +42,7 @@ rules:
     severity_on_persist: critical
 
   - id: meter.flow_rate
-    description: Volume can't grow faster than the meter's overload flow (Q4 = 1.25 x Q3 2.5 m3/h for a domestic meter)
+    description: Volume can't grow faster than the meter's overload flow (Q4 = 1.25 x Q3 from the nameplate)
     kind: transition
     inputs: [volume_m3]
-    check: "delta(volume_m3) / delta_t <= 3.125 / 3600"
+    check: "delta(volume_m3) / delta_t <= max_flow_m3h / 3600"

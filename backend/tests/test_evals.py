@@ -13,6 +13,7 @@ from backend.app.db.pool import create_pool
 from backend.app.evidence.store import LocalEvidenceStore
 from backend.app.llm import ChatClient
 from backend.app.main import create_app
+from backend.tests.fakes import sign_in
 from backend.app.seed import seed_mock
 
 from .fakes import make_settings, tool_response
@@ -106,6 +107,7 @@ def test_a_good_agent_passes_and_its_run_is_traced_step_by_step(tmp_path, clean_
     assert set(result["criteria"]) == {"grounded", "right_cause", "cites_physics", "safe_action", "labels_simulated"}
 
     with TestClient(create_app(settings=settings, start_worker=False)) as client:
+        sign_in(client, settings.database_url)
         evals = client.get("/api/v1/evals").json()
         assert evals[0]["eval_run_id"] == eval_run_id and evals[0]["status"] == "done" and evals[0]["passed"] == 1
         detail = client.get(f"/api/v1/evals/{eval_run_id}").json()

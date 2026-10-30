@@ -44,13 +44,18 @@ export default function EquipmentPage() {
         <div className="stack">
           {primary.map((e) => (
             <Card key={e.equipment_id} title={<div><h2>{e.equipment_id}</h2><div className="muted small">{e.model ?? "—"}</div></div>}
-                  actions={<span className="badge">{e.kind.replace(/_/g, " ")}</span>}>
+                  actions={<div className="row" style={{ gap: 6 }}>
+                  {e.profile?.source === "auto" && <span className="badge">{e.profile.corrected ? "Identified, corrected" : "Identified automatically"}</span>}
+                  <span className="badge">{e.kind.replace(/_/g, " ")}</span></div>}>
               <dl className="kv" style={{ marginBottom: 14 }}>
                 {e.nominal_battery_v != null && <><dt>Battery system</dt><dd className="mono">{e.nominal_battery_v} V</dd></>}
                 {e.rated_va != null && <><dt>Rating</dt><dd className="mono">{e.rated_va} VA</dd></>}
                 {e.idle_w != null && <><dt>Idle draw</dt><dd className="mono">{e.idle_w} W</dd></>}
                 {e.controller_type && <><dt>Controller</dt><dd>{e.controller_type.toUpperCase()}</dd></>}
                 {e.linked_equipment_id && <><dt>Measures</dt><dd>{e.linked_equipment_id}</dd></>}
+                {e.profile?.limits && Object.keys(e.profile.limits).length > 0 && (
+                  <><dt>Nameplate limits</dt><dd className="mono">{Object.entries(e.profile.limits).map(([k, v]) => `${k.replace(/_/g, " ")} ${v}`).join(" · ")}</dd></>
+                )}
               </dl>
               {e.displays.map((d) => <DisplayTable key={d.display_id} display={d} />)}
               {attachedTo(e.equipment_id).map((m) => (

@@ -16,7 +16,7 @@ from backend.app.main import create_app
 from backend.app.pipeline.clips import create_clip
 from backend.app.pipeline.read_digital import TOOL_NAME
 from backend.app.seed import seed_mock
-from backend.tests.fakes import make_settings, tool_response
+from backend.tests.fakes import sign_in, make_settings, tool_response
 from backend.tests.videos import solid_states_video
 
 INVERTER = {"display_kind": "seven_segment", "page_hint": "battery", "glare_or_occlusion": False,
@@ -287,6 +287,7 @@ def test_upload_api_queues_the_clip_and_streams_events(tmp_path, clean_db):
     settings, _, video = setup(tmp_path, clean_db)
     asyncio.run(seed_mock(clean_db))
     with TestClient(create_app(settings=settings, start_worker=False)) as client:
+        sign_in(client, settings.database_url)
         assert client.get("/api/v1/health").json()["db"] == "ok"
         response = client.post("/api/v1/clips", data={"equipment_id": "inv_mock"},
                                files={"file": ("clip.mp4", video.read_bytes(), "video/mp4")})
@@ -305,3 +306,19 @@ def test_upload_api_queues_the_clip_and_streams_events(tmp_path, clean_db):
         equipment = client.get("/api/v1/equipment").json()
         assert [e["equipment_id"] for e in equipment] == ["clamp_mock", "inv_mock"]
         assert len(equipment[1]["displays"][0]["instruments"]) == 7
+
+
+def test_browser_recordings_are_converted_to_mp4_when_ffmpeg_is_available(tmp_path, monkeypatch):
+    import shutil
+
+    import pytest
+
+    from backend.app.pipeline import clips as clips_module
+
+    if not shutil.which("ffmpeg"):
+        monkeypatch.setattr(clips_module.shutil, "which", lambda name: None)
+        assert clips_module.to_mp4(b"webm bytes", ".webm") is None            # no ffmpeg: the original is kept
+        pytest.skip("ffmpeg not installed here (the Docker image has it)")
+    webm = solid_states_video(tmp_path / "rec.mp4", [(30, 30, 30), (200, 200, 200)], seconds_each=0.5).read_bytes()
+    out = clips_module.to_mp4(webm, ".mp4")
+    assert out and out[4:8] == b"ftyp"

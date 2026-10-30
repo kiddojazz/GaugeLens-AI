@@ -6,6 +6,7 @@ import json
 import re
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.db.pool import create_pool
@@ -18,7 +19,7 @@ from backend.app.main import create_app
 from backend.app.pipeline.clips import create_clip
 from backend.app.pipeline.read_digital import TOOL_NAME
 from backend.app.seed import seed_mock
-from backend.tests.fakes import tool_response
+from backend.tests.fakes import make_settings, sign_in, tool_response
 from backend.tests.test_process_clip import CLAMP, OUTPUT_PAGE_MISREAD, setup
 
 
@@ -110,6 +111,7 @@ def test_confirmed_violation_is_diagnosed_with_cited_evidence_and_decided_by_a_h
     assert "anomaly" in types and "diagnosis" in types
 
     with TestClient(create_app(settings=settings, start_worker=False)) as client:
+        sign_in(client, settings.database_url)
         listed = client.get(f"/api/v1/anomalies?clip_id={clip_id}").json()
         assert listed[0]["diagnosis_id"] == diagnosis["diagnosis_id"] and listed[0]["decision"] == "pending"
         assert listed[0]["headline"] == output["headline"]
@@ -128,3 +130,57 @@ def test_an_unverifiable_diagnosis_falls_back_to_the_honest_template(tmp_path, c
     output = diagnosis["output"]
     assert output["headline"].startswith("SIMULATED: ") and output["confidence"] == "low"
     assert "unknown evidence id reading:rd_INVENTED" in output["citation_problems"]
+
+
+class DownAgent:
+    """The model endpoint is out."""
+
+    def __init__(self):
+        self.chat = SimpleNamespace(completions=self)
+
+    async def create(self, **kwargs):
+        raise ConnectionError("model endpoint unreachable")
+
+
+def test_a_model_outage_retries_then_stores_the_honest_template(tmp_path, clean_db):
+    from backend.app.agent.diagnose import diagnose_job
+    from backend.app.agent.evals import BY_ID, seed_scenario
+    from backend.app.llm import ModelUnavailable
+
+    settings = make_settings(tmp_path, database_url=clean_db, evidence_dir=tmp_path / "evidence", max_retries=0)
+
+    async def scenario():
+        await seed_mock(clean_db)
+        pool = await create_pool(clean_db)
+        try:
+            evidence = LocalEvidenceStore(settings.evidence_dir)
+            anomaly_id = await seed_scenario(pool, evidence, BY_ID["hidden_dc_load"])
+            ctx = SimpleNamespace(pool=pool, client=ChatClient(settings, raw_client=DownAgent()), evidence=evidence,
+                                  settings=settings, queue=PostgresJobQueue(pool))
+            job = SimpleNamespace(payload={"anomaly_id": anomaly_id}, attempts=1, max_attempts=3)
+            with pytest.raises(ModelUnavailable):                      # not the last attempt: retried, nothing stored
+                await diagnose_job(job, ctx)
+            assert await pool.fetchval("SELECT count(*) FROM diagnoses") == 0
+
+            job.attempts = 3
+            await diagnose_job(job, ctx)                               # the last attempt never leaves it empty
+            stored = await pool.fetchrow("SELECT verified, model FROM diagnoses WHERE anomaly_id = $1", anomaly_id)
+            assert stored["verified"] is False and stored["model"].startswith("template")
+        finally:
+            await pool.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_failed_tool_tells_the_agent_instead_of_ending_the_run():
+    from backend.app.agent.tools import AgentTools
+
+    tools = AgentTools(None, None, "clip", "equipment")
+
+    async def broken(role):
+        raise KeyError("boom")
+
+    tools.get_readings = broken
+    result = asyncio.run(tools.run("get_readings", json.dumps({"role": "x"})))
+    assert result.text.startswith("TOOL ERROR: get_readings failed (KeyError)")
+

@@ -6,8 +6,7 @@ build_card(pool, anomaly)    the diagnosis agent: one anomaly
 build_clip_card(pool, clip)  the chat: a whole clip (corrections, anomalies, check outcomes)
 """
 
-from ..physics.rules import load_pack
-from ..pipeline.physics_stage import pack_name_for
+from ..pipeline.physics_stage import pack_for
 
 
 def _num(v):
@@ -18,7 +17,7 @@ async def _equipment_lines(pool, equipment_id: str) -> tuple[list[str], list[dic
     equipment = dict(await pool.fetchrow("SELECT * FROM equipment WHERE equipment_id = $1", equipment_id))
     linked = [dict(r) for r in await pool.fetch("SELECT * FROM equipment WHERE linked_equipment_id = $1", equipment_id)]
     instruments = [dict(r) for r in await pool.fetch(
-        """SELECT i.instrument_id, i.physics_role, i.label, i.unit, i.equipment_id FROM instruments i
+        """SELECT i.instrument_id, i.physics_role, i.label, i.unit, i.equipment_id, i.match FROM instruments i
            WHERE i.equipment_id = $1 OR i.equipment_id IN (SELECT equipment_id FROM equipment WHERE linked_equipment_id = $1)
            ORDER BY i.equipment_id, i.physics_role""", equipment_id)]
     lines = ["## Equipment",
@@ -28,10 +27,14 @@ async def _equipment_lines(pool, equipment_id: str) -> tuple[list[str], list[dic
     lines += [f"- linked: {e['equipment_id']} ({e['kind']}, \"{e.get('model') or ''}\")" for e in linked]
     lines.append("\n## Instruments (role: label, unit)")
     lines += [f"- {i['physics_role']}: {i['label']}, {i['unit']} ({i['equipment_id']})" for i in instruments]
-    pack_name = pack_name_for(equipment)
-    if pack_name:
+    profile = equipment.get("profile") or {}
+    if profile.get("source") == "auto":
+        lines.append(f"- identified automatically from the clip ({profile.get('confidence')} confidence): "
+                     f"{profile.get('description') or ''}; limits from the nameplate: {profile.get('limits') or 'none'}")
+    pack = pack_for(equipment, instruments)
+    if pack:
         lines.append("\n## Physics rules for this equipment")
-        for rule in load_pack(pack_name).rules:
+        for rule in pack.rules:
             form = (f"expected {rule.expected}, observed {rule.observed}, tolerance {rule.tolerance_pct} %"
                     if rule.expected else rule.check or f"ratio {rule.check_ratio}")
             lines.append(f"- {rule.id}: {rule.description or ''} [{form}]")

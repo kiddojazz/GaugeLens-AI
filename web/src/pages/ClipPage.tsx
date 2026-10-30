@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, evidenceUrl, type Check, type Frame, type Reading } from "../api";
 import { ChatPanel } from "../chat";
+import { IdentificationCard } from "../identify";
 import { Card, Empty, ErrorBox, Loading, Progress, Simulated, Sparkline, Status } from "../components";
 import { pct, roleLabel, ruleLabel, shortId, timeAgo } from "../format";
 import { useApi, useClipEvents, usePolling } from "../hooks";
@@ -32,9 +33,23 @@ function FrameViewer({ frame, size }: { frame: Frame; size: { w: number; h: numb
   );
 }
 
-function FrameReadings({ readings }: { readings: Reading[] }) {
-  if (!readings.length) return <Empty>No readings on this frame.</Empty>;
+/** Values the reader saw that couldn't be matched to one registered quantity (e.g. a kWh total with no register
+ *  code on screen: import or export?). Shown, never used for physics. */
+function Unassigned({ values }: { values: string[] }) {
+  if (!values.length) return null;
   return (
+    <div className="unassigned small">
+      <div className="muted">Also on screen, not assigned to a reading:</div>
+      <ul>{values.map((v) => <li key={v} className="mono">{v.startsWith("=") ? v.slice(1) : v.replace("=", " = ")}</li>)}</ul>
+      <div className="muted">GaugeLens didn't guess which quantity this is (for example, no register code like 1.8.0 was visible). A frame or photo that shows the code settles it.</div>
+    </div>
+  );
+}
+
+function FrameReadings({ readings, unmapped = [] }: { readings: Reading[]; unmapped?: string[] }) {
+  if (!readings.length) return unmapped.length ? <Unassigned values={unmapped} /> : <Empty>No readings on this frame.</Empty>;
+  return (
+    <>
     <table>
       <thead><tr><th>Quantity</th><th className="num">Read</th><th>Status</th></tr></thead>
       <tbody>
@@ -51,6 +66,8 @@ function FrameReadings({ readings }: { readings: Reading[] }) {
         ))}
       </tbody>
     </table>
+    <Unassigned values={unmapped} />
+    </>
   );
 }
 
@@ -89,7 +106,7 @@ export default function ClipPage() {
   const refreshAll = () => { void frames.reload(); void readings.reload(); void checks.reload(); void corrections.reload(); void anomalies.reload(); };
   const pending = useRef<number | null>(null);
   useClipEvents(clipId, (event) => {
-    if (event.type === "clip_done" || event.type === "diagnosis" || event.type === "anomaly") void clip.reload();
+    if (["clip_done", "diagnosis", "anomaly", "identified"].includes(event.type)) void clip.reload();
     if (pending.current) return;                                  // coalesce bursts of events into one refresh
     pending.current = window.setTimeout(() => { pending.current = null; refreshAll(); }, 800);
   }, processing);
@@ -143,6 +160,8 @@ export default function ClipPage() {
   if (!clip.data) return <Loading />;
   const c = clip.data.clip;
   const progress = clip.data.job?.progress ?? 0;
+  const photos = c.media?.kind === "photos";
+  const place = (i: number, f: Frame) => (photos ? `photo ${i + 1} / ${frameList.length}` : `t = ${f.t.toFixed(1)} s · frame ${i + 1} / ${frameList.length}`);
 
   return (
     <>
@@ -150,9 +169,9 @@ export default function ClipPage() {
         <div>
           <div className="muted small"><Link to="/clips">Clips</Link> / {shortId(c.clip_id)}</div>
           <h1 className="row" style={{ marginTop: 4 }}>
-            {c.equipment_id} <Status value={c.status} /> {c.is_demo_replay && <Simulated />}
+            {c.equipment_id ?? "Identifying…"} <Status value={c.status} /> {c.is_demo_replay && <Simulated />}
           </h1>
-          <p>Added {timeAgo(c.created_at)} · {clip.data.counts.frames} frames · {clip.data.counts.readings} readings</p>
+          <p>Added {timeAgo(c.created_at)} · {clip.data.counts.frames} {photos ? "photos" : "frames"} · {clip.data.counts.readings} readings</p>
         </div>
         {processing && (
           <div className="row"><Progress value={progress} /><span className="mono small muted">{Math.round(progress * 100)}%</span></div>
@@ -162,14 +181,18 @@ export default function ClipPage() {
 
       <div className="grid-2">
         <div className="stack">
-          <Card title="Footage" actions={current && <span className="mono small muted">t = {current.t.toFixed(1)} s · frame {index + 1} / {frameList.length}</span>}>
-            {!current ? (processing ? <Empty>Sampling frames…</Empty> : <Empty>No frames.</Empty>) : (
+          <Card title={photos ? "Photos" : "Footage"} actions={current && <span className="mono small muted">{place(index, current)}</span>}>
+            {photos && !c.media?.timed && (
+              <p className="notice photo-note small">From {c.media?.photos.length === 1 ? "a photo" : "photos"}: every value and the checks that need only one moment were run.
+                Rates (how fast a counter grows) need the real time between readings, so they weren't checked; a short video checks those too.</p>
+            )}
+            {!current ? (processing ? <Empty>{photos ? "Preparing the photos…" : "Sampling frames…"}</Empty> : <Empty>No frames.</Empty>) : (
               <>
                 <FrameViewer frame={current} size={frames.data?.frame_size ?? null} />
                 <div className="viewer-bar">
-                  <button className="btn" onClick={() => select(Math.max(0, index - 1))} disabled={index === 0} aria-label="Previous frame">‹</button>
+                  <button className="btn" onClick={() => select(Math.max(0, index - 1))} disabled={index === 0} aria-label={photos ? "Previous photo" : "Previous frame"}>‹</button>
                   <input type="range" min={0} max={Math.max(0, frameList.length - 1)} value={index} onChange={(e) => select(Number(e.target.value))} aria-label="Frame" />
-                  <button className="btn" onClick={() => select(Math.min(frameList.length - 1, index + 1))} disabled={index >= frameList.length - 1} aria-label="Next frame">›</button>
+                  <button className="btn" onClick={() => select(Math.min(frameList.length - 1, index + 1))} disabled={index >= frameList.length - 1} aria-label={photos ? "Next photo" : "Next frame"}>›</button>
                 </div>
               </>
             )}
@@ -219,9 +242,10 @@ export default function ClipPage() {
         </div>
 
         <div className="stack">
-          <Card title="Readings on this frame" pad={false}><FrameReadings readings={frameReadings} /></Card>
+          <IdentificationCard identification={c.identification} processing={processing} />
+          <Card title="Readings on this frame" pad={false}><FrameReadings readings={frameReadings} unmapped={current?.unmapped} /></Card>
           <ChatPanel clipId={clipId} frameId={current?.frame_id} onCite={cite}
-                     frameLabel={current ? `frame ${index + 1} · t = ${current.t.toFixed(1)} s` : undefined}
+                     frameLabel={current ? place(index, current) : undefined}
                      suggestions={[
                        "Summarise this clip",
                        ...(corrections.data?.length ? ["Why was a reading corrected?"] : []),

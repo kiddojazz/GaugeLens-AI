@@ -40,6 +40,50 @@ function bold(text: string): ReactNode[] {
       : part);
 }
 
+// --- voice: the browser's own speech recognition and synthesis (no extra service). Hidden where unsupported.
+type Recognition = { lang: string; interimResults: boolean; continuous: boolean; start(): void; stop(): void;
+  onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }> }) => void) | null;
+  onend: (() => void) | null; onerror: ((e: { error: string }) => void) | null };
+const RecognitionCtor: (new () => Recognition) | undefined =
+  typeof window !== "undefined" ? ((window as never)["SpeechRecognition"] ?? (window as never)["webkitSpeechRecognition"]) : undefined;
+const canSpeak = typeof window !== "undefined" && "speechSynthesis" in window;
+const SPEAK_KEY = "gaugelens.readAloud";
+
+/** What an answer sounds like: no evidence IDs, no markdown. */
+export function spoken(text: string): string {
+  return text.replace(BRACKETED, " ").replace(EVIDENCE, " ").replace(/[*`#]/g, "").replace(/^\s*[-•]\s+/gm, "")
+    .replace(/\s+([,.;:])/g, "$1").replace(/\s{2,}/g, " ").trim();
+}
+
+// Phones only allow speech that starts from a tap, and an answer arrives seconds after one. Speaking anything during
+// the tap unlocks speech for the page, so the answer may be read when it comes.
+function unlockSpeech() {
+  if (!canSpeak || window.speechSynthesis.speaking || window.speechSynthesis.pending) return;
+  const silent = new SpeechSynthesisUtterance(" ");
+  silent.volume = 0;
+  window.speechSynthesis.speak(silent);
+}
+
+let speaking: SpeechSynthesisUtterance[] = [];   // browsers can drop an utterance nothing refers to, and its events
+
+/** Reads text sentence by sentence (Chrome cuts off long utterances). onEnd(null) = finished or stopped. */
+function speakText(text: string, onEnd: (problem: string | null) => void) {
+  const synth = window.speechSynthesis;
+  const parts = text.match(/(?:\d[.,]\d|[^.!?\n])+[.!?]*/g)?.map((t) => t.trim()).filter(Boolean) ?? [];
+  synth.cancel();
+  speaking = parts.map((part) => new SpeechSynthesisUtterance(part));
+  if (!speaking.length) return onEnd(null);
+  const current = speaking;
+  current.forEach((u, i) => {
+    u.lang = navigator.language || "en-US";
+    if (i === current.length - 1) u.onend = () => onEnd(null);
+    u.onerror = (e) => onEnd(e.error === "canceled" || e.error === "interrupted" ? null
+      : "This browser couldn't read the answer aloud. Check the volume and silent switch, or that the phone has a text-to-speech voice installed.");
+    synth.speak(u);
+  });
+  synth.resume();                                // Chrome can sit paused after the tab was in the background
+}
+
 function Answer({ text, onCite }: { text: string; onCite: (ref: string) => void }) {
   const blocks: ReactNode[] = [];
   let bullets: ReactNode[] = [];
@@ -71,6 +115,12 @@ export function ChatPanel({ clipId, frameId, frameLabel, anomalyId, suggestions,
   const history = useApi(() => api.chat(clipId), [clipId]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
+  const [listening, setListening] = useState(false);
+  const [readAloud, setReadAloud] = useState(() => {
+    try { return window.localStorage.getItem(SPEAK_KEY) === "1"; } catch { return false; }
+  });
+  const [speakingId, setSpeakingId] = useState<string | null>(null);
+  const recognition = useRef<Recognition | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [useFrame, setUseFrame] = useState(true);
@@ -78,11 +128,27 @@ export function ChatPanel({ clipId, frameId, frameLabel, anomalyId, suggestions,
 
   useEffect(() => { if (history.data) setMessages(history.data); }, [history.data]);
   useEffect(() => { setUseFrame(true); }, [frameId]);             // a new frame in view is context again
+  useEffect(() => () => { if (canSpeak) window.speechSynthesis.cancel(); }, []);   // stop when leaving the page
   useEffect(() => { log.current?.scrollTo({ top: log.current.scrollHeight, behavior: "smooth" }); }, [messages, busy]);
+
+  function say(message: ChatMessage) {
+    setError(null);
+    setSpeakingId(message.message_id);
+    speakText(spoken(message.content), (problem) => {
+      setSpeakingId((id) => (id === message.message_id ? null : id));
+      if (problem) setError(problem);
+    });
+  }
+
+  function stopSpeaking() {
+    window.speechSynthesis.cancel();
+    setSpeakingId(null);
+  }
 
   async function send(question: string) {
     const q = question.trim();
     if (!q || busy) return;
+    if (readAloud) unlockSpeech();
     const frame = useFrame ? frameId ?? null : null;
     setBusy(true);
     setError(null);
@@ -95,6 +161,7 @@ export function ChatPanel({ clipId, frameId, frameLabel, anomalyId, suggestions,
     try {
       const answer = await api.ask(clipId, q, frame, anomalyId);
       setMessages((m) => [...m, answer]);
+      if (readAloud && canSpeak) say(answer);
     } catch (e) {
       setMessages((m) => m.filter((x) => x !== pending));
       setDraft(q);                                                  // nothing lost: try again
@@ -109,6 +176,54 @@ export function ChatPanel({ clipId, frameId, frameLabel, anomalyId, suggestions,
     setMessages([]);
   }
 
+  function toggleReadAloud() {
+    const next = !readAloud;
+    setReadAloud(next);
+    if (canSpeak) {
+      if (next) {
+        const latest = [...messages].reverse().find((m) => m.role === "assistant");
+        if (latest) say(latest); else unlockSpeech();   // this tap also allows later answers to be read
+      } else {
+        stopSpeaking();
+      }
+    }
+    try { window.localStorage.setItem(SPEAK_KEY, next ? "1" : "0"); } catch { /* private mode: not remembered */ }
+  }
+
+  /** Speak a question: the words fill the box as you talk, and it is sent when you stop. */
+  function listen() {
+    if (!RecognitionCtor) return;
+    if (listening) {
+      recognition.current?.stop();
+      return;
+    }
+    const rec = new RecognitionCtor();
+    rec.lang = navigator.language || "en-US";
+    rec.interimResults = true;
+    rec.continuous = false;
+    let heard = "";
+    rec.onresult = (e) => {
+      heard = Array.from(e.results).map((r) => r[0].transcript).join(" ").trim();
+      setDraft(heard);
+    };
+    rec.onerror = (e) => {
+      if (e.error === "not-allowed") setError("Microphone permission was refused. Allow it for this site to ask by voice.");
+    };
+    rec.onend = () => {
+      setListening(false);
+      recognition.current = null;
+      if (heard) void send(heard);
+    };
+    recognition.current = rec;
+    setListening(true);
+    if (canSpeak) {
+      window.speechSynthesis.cancel();                             // don't talk over the question
+      setSpeakingId(null);
+      if (readAloud) unlockSpeech();
+    }
+    rec.start();
+  }
+
   function onKey(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -120,7 +235,13 @@ export function ChatPanel({ clipId, frameId, frameLabel, anomalyId, suggestions,
     <section className="card chat">
       <div className="card-head">
         <h2 className="row" style={{ gap: 8 }}><Icon name="chat" /> Ask the agent</h2>
-        {messages.length > 0 && <button className="btn small-btn" onClick={reset} disabled={busy}>New conversation</button>}
+        <div className="row" style={{ gap: 6 }}>
+          {canSpeak && (
+            <button className={`btn small-btn${readAloud ? " active" : ""}`} onClick={toggleReadAloud} aria-pressed={readAloud}
+                    title="Read answers aloud"><Icon name="speaker" size={13} /> {readAloud ? "Reading aloud" : "Read aloud"}</button>
+          )}
+          {messages.length > 0 && <button className="btn small-btn" onClick={reset} disabled={busy}>New conversation</button>}
+        </div>
       </div>
       <div className="chat-log" ref={log} aria-live="polite">
         {!messages.length && !busy && (
@@ -142,6 +263,9 @@ export function ChatPanel({ clipId, frameId, frameLabel, anomalyId, suggestions,
             <div className="bubble-meta row" style={{ gap: 10 }}>
               {m.verified ? <span className="checked"><Icon name="check" size={12} /> Evidence-checked</span>
                 : <span className="unchecked" title={m.problems.join("; ")}><Icon name="fallback" size={12} /> Couldn't verify everything</span>}
+              {canSpeak && (speakingId === m.message_id
+                ? <button className="link-btn" onClick={stopSpeaking}>Stop</button>
+                : <button className="link-btn" onClick={() => say(m)} aria-label="Listen to this answer"><Icon name="speaker" size={12} /> Listen</button>)}
               {m.run_id && <Link to={`/traces/${m.run_id}`}>Trace</Link>}
             </div>
           </div>
@@ -160,7 +284,13 @@ export function ChatPanel({ clipId, frameId, frameLabel, anomalyId, suggestions,
         )}
         <div className="chat-compose">
           <textarea value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={onKey} rows={2} maxLength={1000}
-                    placeholder="Ask a question…" aria-label="Your question" disabled={busy} />
+                    placeholder={listening ? "Listening… speak your question" : "Ask a question…"} aria-label="Your question" disabled={busy} />
+          {RecognitionCtor && (
+            <button className={`btn mic${listening ? " listening" : ""}`} onClick={listen} disabled={busy}
+                    aria-label={listening ? "Stop listening" : "Ask by voice"} aria-pressed={listening}>
+              <Icon name="mic" size={15} />
+            </button>
+          )}
           <button className="btn primary" onClick={() => send(draft)} disabled={busy || !draft.trim()} aria-label="Send">
             <Icon name="send" size={14} />
           </button>

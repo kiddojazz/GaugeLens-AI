@@ -12,9 +12,22 @@ from .schemas import DiagnosisOutput, Hypothesis, Observation, PhysicsFinding
 ID = re.compile(r"\b(?:reading|check|frame|anomaly|manual):[A-Za-z0-9_#.\-]+")
 _NUMBER = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?(?![\w])")
 _UNSAFE = [
-    re.compile(r"\b(open|remove|unscrew)\b[^.]{0,40}\b(cover|enclosure|panel|battery box|casing)\b", re.IGNORECASE),
-    re.compile(r"\b(bypass|disable|override|jumper)\b[^.]{0,40}\b(protection|breaker|fuse|cut-?off|bms)\b", re.IGNORECASE),
+    re.compile(r"\b(open|remove|unscrew)\b[^.]{0,80}\b(cover|enclosure|panel|battery box|casing)\b", re.IGNORECASE),
+    re.compile(r"\b(bypass|disable|override|jumper)\b[^.]{0,80}\b(protection|breaker|fuse|cut-?off|bms)\b", re.IGNORECASE),
+    re.compile(r"\b(touch|handle|short|bridge)\b[^.]{0,80}\b(terminals?|busbars?|live|conductors?|bare wires?)\b", re.IGNORECASE),
 ]
+_WARNS_AGAINST = re.compile(r"\b(do not|don't|never|avoid|must not|should not|shouldn't)\b[^.!?\n]*$", re.IGNORECASE)
+_RESULT_FOR_PASSED = {"pass", "passed"}
+_RESULT_FOR_FAILED = {"fail", "failed"}
+
+
+def unsafe_in(text: str) -> bool:
+    """Advice to open enclosures, touch live parts or defeat protection. "Do not touch the terminals" is the opposite."""
+    for pattern in _UNSAFE:
+        for match in pattern.finditer(text or ""):
+            if not _WARNS_AGAINST.search(text[:match.start()]):
+                return True
+    return False
 
 
 def ids_in(text: str) -> set[str]:
@@ -25,10 +38,24 @@ def numbers_in(text: str) -> set[float]:
     return {float(m) for m in _NUMBER.findall(ID.sub(" ", text or ""))}
 
 
-def _supported(token: str, evidence: set[float]) -> bool:
+def _supported(token: str, evidence: set[float], exact_integers: bool = False) -> bool:
+    """Is this number in the evidence, allowing it to be written with fewer decimals? exact_integers: "25" doesn't
+    match 25.2. A diagnosis quotes readings exactly; chat may say "about 25 V"."""
     value = float(token)
     places = len(token.split(".")[1]) if "." in token else 0
+    if exact_integers and places == 0:
+        return any(abs(v - value) < 1e-9 for v in evidence)
     return any(round(v, places) == round(value, places) or abs(v - value) < 1e-9 for v in evidence)
+
+
+def _result_matches(result: str, outcome: str | None) -> bool:
+    """A physics finding must state what the stored check concluded (any failure wording for a failed check)."""
+    if not outcome:
+        return True
+    said = result.strip().lower()
+    if outcome == "pass":
+        return said in _RESULT_FOR_PASSED
+    return said == outcome or said in _RESULT_FOR_FAILED
 
 
 def citation_problems(diagnosis: DiagnosisOutput, evidence_text: str, checks: dict[str, dict]) -> list[str]:
@@ -36,6 +63,15 @@ def citation_problems(diagnosis: DiagnosisOutput, evidence_text: str, checks: di
     known_ids = ids_in(evidence_text)
     known_numbers = numbers_in(evidence_text)
     problems: list[str] = []
+    for name, items in (("observations", diagnosis.observations), ("physics findings", diagnosis.physics),
+                        ("hypotheses", diagnosis.hypotheses)):
+        if not items:                                # nothing to check must never count as checked
+            problems.append(f"the diagnosis has no {name}")
+    interpretation = [diagnosis.headline] + [t for h in diagnosis.hypotheses for t in (h.cause, *h.supporting, *h.against)]
+    for text in interpretation:
+        for token in _NUMBER.findall(ID.sub(" ", text)):
+            if not ("." not in token and abs(float(token)) <= 10) and not _supported(token, known_numbers, exact_integers=True):
+                problems.append(f"number {token} not in any tool result")
     for obs in diagnosis.observations:
         if not obs.evidence:
             problems.append(f"observation without evidence: '{obs.statement[:60]}'")
@@ -43,7 +79,7 @@ def citation_problems(diagnosis: DiagnosisOutput, evidence_text: str, checks: di
             if ref not in known_ids:
                 problems.append(f"unknown evidence id {ref}")
         for token in _NUMBER.findall(ID.sub(" ", obs.statement)):
-            if not _supported(token, known_numbers):
+            if not _supported(token, known_numbers, exact_integers=True):
                 problems.append(f"number {token} not in any tool result")
     for finding in diagnosis.physics:
         refs = [r for r in finding.evidence if r.startswith("check:")]
@@ -56,6 +92,8 @@ def citation_problems(diagnosis: DiagnosisOutput, evidence_text: str, checks: di
                 continue
             if stored["rule_id"] != finding.rule_id:
                 problems.append(f"{ref} is rule {stored['rule_id']}, not {finding.rule_id}")
+            if not _result_matches(finding.result, stored.get("outcome")):
+                problems.append(f"{ref} concluded {stored['outcome']}, not {finding.result}")
             if (finding.residual_pct is not None and stored["residual_pct"] is not None
                     and round(float(stored["residual_pct"]), 1) != round(finding.residual_pct, 1)):
                 problems.append(f"{ref} residual is {stored['residual_pct']}, not {finding.residual_pct}")
@@ -63,9 +101,8 @@ def citation_problems(diagnosis: DiagnosisOutput, evidence_text: str, checks: di
         for ref in [r for r in hyp.supporting + hyp.against if ID.fullmatch(r)]:
             if ref not in known_ids:
                 problems.append(f"unknown evidence id {ref} in hypothesis '{hyp.cause[:40]}'")
-    for pattern in _UNSAFE:
-        if pattern.search(diagnosis.proposed_action):
-            problems.append("the proposed action is unsafe (opening enclosures or defeating protection)")
+    if unsafe_in(diagnosis.proposed_action):
+        problems.append("the proposed action is unsafe (opening enclosures, touching live parts or defeating protection)")
     return list(dict.fromkeys(problems))
 
 

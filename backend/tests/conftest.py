@@ -13,7 +13,7 @@ from backend.app.config import load_dotenv
 from backend.app.db.init_db import init
 
 TEST_DB = "gaugelens_test"
-TABLES = ("channel_messages, chat_messages, eval_results, eval_runs, agent_spans, agent_runs, clip_events, jobs, model_calls, diagnoses, anomalies, physics_checks, readings, frames, "
+TABLES = ("sessions, users, chat_messages, eval_results, eval_runs, agent_spans, agent_runs, clip_events, jobs, model_calls, diagnoses, anomalies, physics_checks, readings, frames, "
           "clip_annotations, clips, instruments, displays, equipment, sites")
 
 

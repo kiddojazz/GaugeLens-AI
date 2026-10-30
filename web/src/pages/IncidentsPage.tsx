@@ -39,7 +39,10 @@ export default function IncidentsPage() {
           <h1>Incidents</h1>
           <p>Faults confirmed by physics, and misreads GaugeLens caught and corrected on its own.</p>
         </div>
-        <Link className="btn primary" to="/upload">Upload clip</Link>
+        <div className="row" style={{ gap: 8 }}>
+          <Link className="btn" to="/upload">Upload clip</Link>
+          <Link className="btn primary" to="/scan">Scan now</Link>
+        </div>
       </div>
 
       <div className="grid-stats">

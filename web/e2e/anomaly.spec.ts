@@ -37,11 +37,18 @@ test.describe("diagnosed anomaly", () => {
     await expect(page.locator(".viewer img")).toBeVisible();
   });
 
-  test("the agent's investigation trace expands", async ({ page }) => {
+  test("the agent's investigation trace is shown (step list, or the tool list for older diagnoses)", async ({ page }) => {
     const trace = diagnosis.output.trace ?? [];
     test.skip(!trace.length, "diagnosis has no trace");
     await page.goto(`/#/anomalies/${anomaly.anomaly_id}`);
-    const details = page.locator("details");
+    const card = page.locator("section.card", { has: page.getByRole("heading", { name: "How the agent investigated" }) });
+    await expect(card).toBeVisible();
+    if (diagnosis.output.run_id) {                          // traced run: icon-led step list linking to the trace
+      await expect(card.locator(".mini-trace li").first()).toBeVisible();
+      await expect(card).toContainText(trace[0].tool);
+      return;
+    }
+    const details = card.locator("details");
     await expect(details.locator("li").first()).toBeHidden();
     await details.locator("summary").click();
     await expect(details.locator("li")).toHaveCount(trace.length);
@@ -62,7 +69,7 @@ test.describe("diagnosed anomaly", () => {
     );
     await page.getByRole("button", { name: "Approve" }).click();
 
-    await expect.poll(() => posted).toEqual({ decision: "approved", note: "Technician will check Friday", decided_by: "web" });
+    await expect.poll(() => posted).toEqual({ decision: "approved", note: "Technician will check Friday" });   // the server records who
     const panel = page.locator("section.card", { has: page.getByRole("heading", { name: "Decision" }) });
     await expect(panel).toContainText("Approved");
     await expect(panel).toContainText("Technician will check Friday");

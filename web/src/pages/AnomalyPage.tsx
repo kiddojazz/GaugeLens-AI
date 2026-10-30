@@ -86,7 +86,7 @@ export default function AnomalyPage() {
     <>
       <div className="page-head">
         <div>
-          <div className="muted small"><Link to="/">Incidents</Link> / anomaly {shortId(a.anomaly_id)}</div>
+          <div className="muted small"><Link to="/incidents">Incidents</Link> / anomaly {shortId(a.anomaly_id)}</div>
           <h1 className="row" style={{ marginTop: 4 }}>{ruleLabel(a.rule_id)} <Status value={a.severity} /> {a.is_simulated && <Simulated />}</h1>
           <p>{a.equipment_id}{a.equipment_model ? ` · ${a.equipment_model}` : ""} · detected {timeAgo(a.ts_start)} · <Link to={`/clips/${a.clip_id}`}>open clip</Link></p>
         </div>
@@ -193,8 +193,8 @@ export default function AnomalyPage() {
           )}
           <Card title="Evidence">
             <dl className="kv small">
-              <dt>Checks</dt><dd className="row" style={{ gap: 6 }}>{a.evidence.check_ids.slice(0, 6).map((c) => <Cite key={c} refId={`check:${c}`} />)}</dd>
-              <dt>Frames</dt><dd className="row" style={{ gap: 6 }}>{a.evidence.frame_ids.slice(0, 6).map((f) => <Cite key={f} refId={`frame:${f}`} />)}</dd>
+              <dt>Checks</dt><dd className="row" style={{ gap: 6 }}>{(a.evidence?.check_ids ?? []).slice(0, 6).map((c) => <Cite key={c} refId={`check:${c}`} />)}</dd>
+              <dt>Frames</dt><dd className="row" style={{ gap: 6 }}>{(a.evidence?.frame_ids ?? []).slice(0, 6).map((f) => <Cite key={f} refId={`frame:${f}`} />)}</dd>
             </dl>
           </Card>
           {trace.data ? (

@@ -1,7 +1,11 @@
 """Frame sampling and change detection.
 
-Frames are sampled at a fixed rate (SAMPLE_FPS, default 2). A display is only re-read when its crop
-changed or REREAD_INTERVAL_S passed; LCD values change slowly, so this is the main model-credit saver.
+Frames are sampled at a fixed rate (SAMPLE_FPS, default 2), lowered for long videos so a clip never has more than
+MAX_FRAMES (default 60): every frame is a model call, and a 50 s clip at 2 fps took minutes. A display is only
+re-read when its crop changed or REREAD_INTERVAL_S passed; LCD values change slowly, so this is the main
+model-credit saver.
+
+Photos (photo_frames) are a clip of still frames, one per photo, in the order sent.
 
 "Changed" = the LARGEST mean grey-level difference over 16x16-pixel blocks of a fixed 160x48 thumbnail,
 above CHANGE_THRESHOLD (default 10). A whole-crop mean missed a page change that only moved a few digits
@@ -12,10 +16,11 @@ display scored 10-61; with tracked boxes it scores 2-9.
 
 import io
 from dataclasses import dataclass
+from datetime import datetime
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 
 @dataclass
@@ -24,6 +29,19 @@ class SampledFrame:
     t_offset_s: float          # seconds from the start of the video
     jpeg: bytes
     size: tuple[int, int]      # (width, height)
+
+
+def effective_fps(video_path: str, fps: float, max_frames: int | None) -> float:
+    """The sampling rate for this video: `fps`, lowered so a long video yields at most `max_frames` frames."""
+    if not max_frames:
+        return fps
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        source_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        duration = (cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0) / source_fps
+    finally:
+        cap.release()
+    return min(fps, max_frames / duration) if duration * fps > max_frames else fps
 
 
 def sample_frames(video_path: str, fps: float = 2.0, jpeg_quality: int = 92) -> list[SampledFrame]:
@@ -48,6 +66,65 @@ def sample_frames(video_path: str, fps: float = 2.0, jpeg_quality: int = 92) -> 
             next_t += step
     finally:
         cap.release()
+    return frames
+
+
+PHOTO_GAP_S = 300.0            # photos without capture times: spaced so no rule combines values from two photos
+MAX_PHOTO_SIDE = 2560
+MAX_PHOTO_PIXELS = 120_000_000     # checked before decoding: a tiny file can unpack to gigabytes (the largest phones: 200 MP)
+_EXIF_TIMES = (36867, 36868, 306)   # DateTimeOriginal, DateTimeDigitized, DateTime
+
+
+def _taken_at(img: Image.Image) -> datetime | None:
+    exif = img.getexif()
+    sub = exif.get_ifd(0x8769) if exif else {}
+    for tag in _EXIF_TIMES:
+        raw = sub.get(tag) or exif.get(tag)
+        if raw:
+            try:
+                return datetime.strptime(str(raw).strip()[:19], "%Y:%m:%d %H:%M:%S")
+            except ValueError:
+                continue
+    return None
+
+
+def normalise_photo(data: bytes, jpeg_quality: int = 92) -> tuple[bytes, datetime | None]:
+    """(JPEG bytes, when it was taken). Upright (phones store rotation as a tag), at most MAX_PHOTO_SIDE pixels,
+    and with all metadata dropped: phone photos carry the GPS location, which GaugeLens never needs to keep."""
+    try:
+        img = Image.open(io.BytesIO(data))           # reads only the header
+        if img.width * img.height > MAX_PHOTO_PIXELS:
+            raise ValueError(f"this photo is too large ({img.width} x {img.height} pixels); "
+                             "use a lower camera resolution")
+        img.draft("RGB", (MAX_PHOTO_SIDE, MAX_PHOTO_SIDE))    # JPEG: decode at reduced size when it can
+        img.load()
+    except ValueError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - any decoder error means "not a photo we can read"
+        raise ValueError("this file isn't a photo GaugeLens can read (use JPEG, PNG or WebP)") from exc
+    taken = _taken_at(img)
+    img = ImageOps.exif_transpose(img).convert("RGB")
+    img.thumbnail((MAX_PHOTO_SIDE, MAX_PHOTO_SIDE))
+    out = io.BytesIO()
+    img.save(out, "JPEG", quality=jpeg_quality)          # no exif= argument: nothing of the original's metadata
+    return out.getvalue(), taken
+
+
+def photo_times(taken: list[datetime | None]) -> tuple[list[float], bool]:
+    """Seconds from the first photo for each photo, and whether those are real capture times. Without a capture
+    time on every photo, photos are PHOTO_GAP_S apart: rules that need a real time between readings don't run."""
+    if taken and all(taken) and len(set(taken)) == len(taken):
+        first = min(taken)
+        return [(t - first).total_seconds() for t in taken], True
+    return [i * PHOTO_GAP_S for i in range(len(taken))], False
+
+
+def photo_frames(photos: list[tuple[bytes, float]]) -> list[SampledFrame]:
+    """One frame per (normalised JPEG, t_offset_s), in time order."""
+    frames = []
+    for jpeg, t in sorted(photos, key=lambda p: p[1]):
+        size = Image.open(io.BytesIO(jpeg)).size
+        frames.append(SampledFrame(len(frames), round(t, 3), jpeg, size))
     return frames
 
 

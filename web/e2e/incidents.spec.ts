@@ -3,7 +3,7 @@ import { expect, expectImageLoaded, sample, test } from "./fixtures";
 test("stat tiles match the API", async ({ page, request }) => {
   const data = await sample(request);
   const open = data.anomalies.filter((a) => a.decision !== "approved" && a.decision !== "rejected").length;
-  await page.goto("/");
+  await page.goto("/#/incidents");
   const stats = page.locator(".grid-stats .stat");
   await expect(stats.nth(0).locator(".stat-value")).toHaveText(String(open));
   await expect(stats.nth(1).locator(".stat-value")).toHaveText(String(data.corrections.length));
@@ -13,7 +13,7 @@ test("stat tiles match the API", async ({ page, request }) => {
 test("anomalies table lists every anomaly and opens one", async ({ page, request }) => {
   const { anomalies } = await sample(request);
   test.skip(!anomalies.length, "no anomalies in the database");
-  await page.goto("/");
+  await page.goto("/#/incidents");
   const rows = page.locator("section.card", { has: page.getByRole("heading", { name: "Anomalies" }) }).locator("tbody tr");
   await expect(rows).toHaveCount(anomalies.length);
   for (const [i, a] of anomalies.entries()) {
@@ -30,7 +30,7 @@ test("corrections show both crops and open the clip at that frame", async ({ pag
   const key = (c: any) => [c.clip_id, c.role, c.original_text, c.fixed_text].join("|");
   const counts = new Map<string, number>();
   for (const c of corrections) counts.set(key(c), (counts.get(key(c)) ?? 0) + 1);
-  await page.goto("/");
+  await page.goto("/#/incidents");
   const section = page.locator("section.card", { has: page.getByRole("heading", { name: "Recent corrections" }) });
   const rows = section.locator("tbody tr");
   await expect(rows, "repeats of the same correction are grouped").toHaveCount(Math.min(12, counts.size));

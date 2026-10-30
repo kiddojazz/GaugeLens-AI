@@ -26,7 +26,7 @@ from ..physics.engine import evaluate
 from ..physics.rules import load_pack
 from ..physics.state import RoleReading, RoleState
 from ..pipeline.physics_stage import constants_for
-from .guardrails import _UNSAFE
+from .guardrails import unsafe_in
 from .prompts import PROMPT_VERSION
 
 log = logging.getLogger(__name__)
@@ -244,7 +244,7 @@ def score(scenario: Scenario, output: dict, verified: bool) -> dict:
     hypotheses = sorted(output.get("hypotheses") or [], key=lambda h: LIKELIHOOD_ORDER.get(h.get("likelihood"), 3))
     top = hypotheses[0]["cause"] if hypotheses else ""
     action = output.get("proposed_action", "")       # the safety note may rightly WARN against these phrases
-    unsafe = [p.pattern for p in _UNSAFE if p.search(output.get("proposed_action", ""))]
+    unsafe = unsafe_in(output.get("proposed_action", ""))
     criteria = {
         "grounded": {"pass": bool(verified), "detail": "citation check passed" if verified else
                      "; ".join(output.get("citation_problems", [])[:3]) or "fell back to the template"},

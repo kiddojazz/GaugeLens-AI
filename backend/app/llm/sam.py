@@ -10,6 +10,7 @@ Every call is cached by hash(model, prompt, media bytes) like the chat client.
 """
 
 import base64
+import logging
 import re
 import time
 from dataclasses import dataclass, field
@@ -23,6 +24,9 @@ from .client import CacheMiss, CallMeta, ModelUnavailable
 SAM_MODEL = "sam-3.1"
 _FRAME = re.compile(r"^<(\d+)f>(.*)$")
 _RECORD = re.compile(r"(\d+)<\|box;(.*?)\|><\|mask;(.*?)\|>(?=,\d+<\|box|\s*$)", re.DOTALL)
+
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -61,12 +65,15 @@ def parse_sam_output(text: str) -> list[Detection]:
             box = _fields(rec.group(2))
             mask = _fields(rec.group(3))
             confidence = box.get("c") or mask.get("c")
-            detections.append(Detection(
-                object_id=int(rec.group(1)), frame=frame,
-                box=(float(box["x1"]), float(box["y1"]), float(box["x2"]), float(box["y2"])),
-                frame_size=(int(box["w"]), int(box["h"])),
-                confidence=float(confidence) if confidence is not None else None,
-                mask_token=rec.group(3)))
+            try:
+                detections.append(Detection(
+                    object_id=int(rec.group(1)), frame=frame,
+                    box=(float(box["x1"]), float(box["y1"]), float(box["x2"]), float(box["y2"])),
+                    frame_size=(int(box["w"]), int(box["h"])),
+                    confidence=float(confidence) if confidence is not None else None,
+                    mask_token=rec.group(3)))
+            except (KeyError, ValueError) as exc:     # one bad record mustn't fail the clip: the rest still count
+                log.warning("skipped a malformed SAM record: %s: %s", type(exc).__name__, exc)
     return detections
 
 

@@ -1,5 +1,7 @@
 """Agent traces and evaluations.
 
+Traces and evaluations are admin pages; anyone may read the traces of their own clips' anomalies and chats.
+
     GET  /api/v1/traces?anomaly_id=&eval_run_id=&limit=   agent runs, newest first
     GET  /api/v1/traces/{run_id}                          one run with all its spans (the step tree)
     GET  /api/v1/evals                                    evaluation runs, newest first
@@ -13,10 +15,12 @@
 
 from types import SimpleNamespace
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from ..access import Principal, admin_principal, current_principal, require_anomaly, require_clip, visible
 from ..agent import chat
+from ..limits import caller_key, enforce
 
 from ..agent.evals import BY_ID, scenario_catalog
 from ..ids import new_id
@@ -33,8 +37,12 @@ _RUN_COLUMNS = """r.run_id, r.kind, r.anomaly_id, r.diagnosis_id, r.eval_run_id,
 
 @router.get("/traces")
 async def list_traces(request: Request, anomaly_id: str | None = None, eval_run_id: str | None = None,
-                      limit: int = Query(50, le=200)):
+                      limit: int = Query(50, le=200), principal: Principal = Depends(current_principal)):
     state = _state(request)
+    if anomaly_id:
+        await require_anomaly(state.pool, principal, anomaly_id)
+    elif not principal.is_admin:
+        raise HTTPException(status_code=403, detail="admins only")
     rows = await state.pool.fetch(
         f"""SELECT {_RUN_COLUMNS} FROM agent_runs r
             LEFT JOIN anomalies a USING (anomaly_id) LEFT JOIN diagnoses d ON d.diagnosis_id = r.diagnosis_id
@@ -44,12 +52,13 @@ async def list_traces(request: Request, anomaly_id: str | None = None, eval_run_
 
 
 @router.get("/traces/{run_id}")
-async def get_trace(request: Request, run_id: str):
+async def get_trace(request: Request, run_id: str, principal: Principal = Depends(current_principal)):
     state = _state(request)
     run = await state.pool.fetchrow(
         f"""SELECT {_RUN_COLUMNS} FROM agent_runs r
             LEFT JOIN anomalies a USING (anomaly_id) LEFT JOIN diagnoses d ON d.diagnosis_id = r.diagnosis_id
-            WHERE r.run_id = $1""", run_id)
+            LEFT JOIN clips c ON c.clip_id = COALESCE(a.clip_id, r.clip_id)
+            WHERE r.run_id = $1 AND {visible('c', 2)}""", run_id, *principal.scope())
     if run is None:
         raise HTTPException(status_code=404, detail="trace not found")
     spans = await state.pool.fetch(
@@ -59,7 +68,7 @@ async def get_trace(request: Request, run_id: str):
 
 
 @router.get("/evals")
-async def list_evals(request: Request, limit: int = Query(20, le=100)):
+async def list_evals(request: Request, limit: int = Query(20, le=100), _: Principal = Depends(admin_principal)):
     state = _state(request)
     rows = await state.pool.fetch(
         """SELECT e.*, (SELECT progress FROM jobs j WHERE j.dedupe_key = 'run_eval:' || e.eval_run_id) AS progress
@@ -68,12 +77,12 @@ async def list_evals(request: Request, limit: int = Query(20, le=100)):
 
 
 @router.get("/evals/scenarios")
-async def list_scenarios():
+async def list_scenarios(_: Principal = Depends(admin_principal)):
     return scenario_catalog()
 
 
 @router.get("/evals/{eval_run_id}")
-async def get_eval(request: Request, eval_run_id: str):
+async def get_eval(request: Request, eval_run_id: str, _: Principal = Depends(admin_principal)):
     state = _state(request)
     run = await state.pool.fetchrow(
         """SELECT e.*, (SELECT progress FROM jobs j WHERE j.dedupe_key = 'run_eval:' || e.eval_run_id) AS progress
@@ -94,7 +103,7 @@ class EvalRequest(BaseModel):
 
 
 @router.post("/evals", status_code=202)
-async def start_eval(request: Request, body: EvalRequest | None = None):
+async def start_eval(request: Request, body: EvalRequest | None = None, _: Principal = Depends(admin_principal)):
     state = _state(request)
     if state.queue is None:
         raise HTTPException(status_code=503, detail="database not available")
@@ -123,15 +132,21 @@ class Question(BaseModel):
 
 
 @router.get("/clips/{clip_id}/chat")
-async def get_chat(request: Request, clip_id: str):
+async def get_chat(request: Request, clip_id: str, principal: Principal = Depends(current_principal)):
     state = _state(request)
+    await require_clip(state.pool, principal, clip_id)
     return [_jsonable(m) for m in await chat.history(state.pool, clip_id)]
 
 
 @router.post("/clips/{clip_id}/chat")
-async def ask(request: Request, clip_id: str, body: Question):
+async def ask(request: Request, clip_id: str, body: Question, principal: Principal = Depends(current_principal)):
     """Answers synchronously (a few seconds: the agent may call tools). The question is stored first."""
     state = _state(request)
+    await require_clip(state.pool, principal, clip_id)
+    if not principal.is_admin:
+        key, is_guest = caller_key(principal, request)
+        enforce(request, f"{key}:questions", state.settings.guest_questions_per_hour if is_guest
+                else state.settings.user_questions_per_hour, "questions")
     ctx = SimpleNamespace(pool=state.pool, client=state.client, evidence=state.evidence)
     try:
         message = await chat.ask(ctx, clip_id, body.question, frame_id=body.frame_id, anomaly_id=body.anomaly_id)
@@ -143,5 +158,7 @@ async def ask(request: Request, clip_id: str, body: Question):
 
 
 @router.delete("/clips/{clip_id}/chat", status_code=204)
-async def clear_chat(request: Request, clip_id: str):
-    await chat.clear(_state(request).pool, clip_id)
+async def clear_chat(request: Request, clip_id: str, principal: Principal = Depends(current_principal)):
+    state = _state(request)
+    await require_clip(state.pool, principal, clip_id)
+    await chat.clear(state.pool, clip_id)

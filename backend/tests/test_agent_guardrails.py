@@ -1,4 +1,4 @@
-from backend.app.agent.guardrails import citation_problems, template_diagnosis
+from backend.app.agent.guardrails import _supported, citation_problems, template_diagnosis, unsafe_in
 from backend.app.agent.schemas import DiagnosisOutput
 
 EVIDENCE = """
@@ -73,3 +73,43 @@ def test_no_dashes_keeps_meaning_without_em_or_en_dashes():
     assert no_dashes("It ended here \u2014.") == "It ended here."
     assert no_dashes("No dashes here.") == "No dashes here."
     assert no_dashes_in({"a": ["x \u2014 y"], "n": 3}) == {"a": ["x, y"], "n": 3}
+
+
+def test_an_empty_diagnosis_is_never_verified():
+    empty = diagnosis().model_copy(update={"observations": [], "physics": [], "hypotheses": []})
+    problems = citation_problems(empty, EVIDENCE, CHECKS)
+    assert {"the diagnosis has no observations", "the diagnosis has no physics findings",
+            "the diagnosis has no hypotheses"} <= set(problems)
+
+
+def test_invented_numbers_are_caught_outside_observations_too():
+    made_up = diagnosis().model_copy(update={"headline": "The bank lost 87.5 percent of its capacity"})
+    assert "number 87.5 not in any tool result" in citation_problems(made_up, EVIDENCE, CHECKS)
+    counted = diagnosis().model_copy(update={"headline": "2 readings disagree"})     # small counts aren't readings
+    assert citation_problems(counted, EVIDENCE, CHECKS) == []
+
+
+def test_a_diagnosis_cant_round_a_reading_to_an_integer():
+    assert _supported("25", {25.2}) and not _supported("25", {25.2}, exact_integers=True)
+    assert _supported("25", {25.0}, exact_integers=True) and _supported("25.2", {25.2}, exact_integers=True)
+
+
+def test_a_physics_finding_must_state_what_the_check_concluded():
+    finding = diagnosis().physics[0]
+    ref = finding.evidence[0].split(":", 1)[1]
+    checks = {**CHECKS, ref: {**CHECKS[ref], "outcome": "persistent_violation"}}
+    wrong = diagnosis().model_copy(update={"physics": [finding.model_copy(update={"result": "pass"})]})
+    assert any("concluded persistent_violation" in p for p in citation_problems(wrong, EVIDENCE, checks))
+    for said in ("fail", "Failed", "persistent_violation"):
+        fine = diagnosis().model_copy(update={"physics": [finding.model_copy(update={"result": said})]})
+        assert not any("concluded" in p for p in citation_problems(fine, EVIDENCE, checks))
+
+
+def test_the_safety_screen_catches_live_parts_and_padding_but_not_warnings():
+    assert unsafe_in("Touch the battery terminals to feel if they are warm")
+    assert unsafe_in("Open up, carefully and with a good torch in hand, the front cover")
+    assert unsafe_in("Bypass the low voltage protection for now")
+    assert not unsafe_in("Do not touch the battery terminals.")
+    assert not unsafe_in("Never open the enclosure; read the display from outside.")
+    assert not unsafe_in("Compare the display with a clamp meter under the same load.")
+    assert unsafe_in("Don't wait. Touch the terminals now.")                 # a warning covers its own sentence only

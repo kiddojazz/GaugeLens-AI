@@ -61,31 +61,32 @@ class Settings:
     azure_storage_connection_string: str | None = None
     azure_blob_container: str = "guagelens"
 
-    # --- messaging channels (Meta: WhatsApp Cloud API, Messenger Platform)
-    whatsapp_access_token: str | None = None
-    whatsapp_phone_number_id: str | None = None
-    messenger_page_access_token: str | None = None
-    messenger_page_id: str | None = None
-    meta_app_secret: str | None = None           # verifies webhook signatures (both channels); unset = no check
-    webhook_verify_token: str | None = None      # our handshake secret for both webhooks
-    graph_version: str = "v25.0"
-    default_equipment: str = "inv_mock"          # what a clip sent on a channel is filed under
-    channel_allowed_senders: tuple = ()          # empty = anyone who can message us
-
     # --- pipeline
     seg_provider: str = "manual"         # manual (registered ROIs) | meta (SAM 3.1 finds displays per clip)
     worker_in_process: bool = True       # run the job worker inside the API process (v1 default)
     sample_fps: float = 2.0              # frames sampled per second of video
+    max_frames: int = 60                 # long videos are sampled more sparsely so a clip stays within this
     reread_interval_s: float = 10.0      # re-read an unchanged display at least this often
     change_threshold: float = 10.0       # largest per-block grey-level difference (0-255) that counts as "changed"
     sam_track: bool = True               # with SEG_PROVIDER=meta: track displays through the clip (SAM 3.1 video)
-    max_upload_mb: int = 200
+    max_upload_mb: int = 100             # a 2-minute 1080p phone clip fits; uploads are held in memory
     max_relooks_per_clip: int = 10       # re-look budget (each re-look = up to 2 attempts)
 
     # --- limits
     request_timeout_s: float = 90.0
     max_retries: int = 2                 # transport retries on 429/5xx and timeouts
     max_schema_retries: int = 1          # re-asks when the model's JSON fails validation
+
+    # --- access (guests, accounts, admin)
+    guest_idle_minutes: int = 30         # a guest session with no activity this long ends and its data is deleted
+    guest_max_clips: int = 5             # clips one guest session may upload (model credits)
+    user_session_days: int = 30          # an account stays signed in this long after its last visit
+    # per hour: guests by address (a new session doesn't reset them), accounts by account; admins unlimited (limits.py)
+    guest_sessions_per_hour: int = 60    # generous: every page refresh starts a session
+    guest_uploads_per_hour: int = 10
+    guest_questions_per_hour: int = 40
+    user_uploads_per_hour: int = 30
+    user_questions_per_hour: int = 200
 
     @property
     def read_model(self) -> str:
@@ -111,22 +112,22 @@ def get_settings() -> Settings:
         evidence_store=(_env("EVIDENCE_STORE", "local") or "local").lower(),
         azure_storage_connection_string=_env("AZURE_STORAGE_CONNECTION_STRING"),
         azure_blob_container=_env("AZURE_BLOB_CONTAINER", "guagelens") or "guagelens",
-        whatsapp_access_token=_env("WHATSAPP_ACCESS_TOKEN"),
-        whatsapp_phone_number_id=_env("WHATSAPP_PHONE_NUMBER_ID"),
-        messenger_page_access_token=_env("MESSENGER_PAGE_ACCESS_TOKEN"),
-        messenger_page_id=_env("MESSENGER_PAGE_ID"),
-        meta_app_secret=_env("META_APP_SECRET") or _env("WHATSAPP_APP_SECRET"),
-        webhook_verify_token=_env("WEBHOOK_VERIFY_TOKEN") or _env("WHATSAPP_VERIFY_TOKEN"),
-        graph_version=_env("META_GRAPH_VERSION") or _env("WHATSAPP_GRAPH_VERSION") or "v25.0",
-        default_equipment=_env("CHANNEL_DEFAULT_EQUIPMENT") or _env("WHATSAPP_DEFAULT_EQUIPMENT") or "inv_mock",
-        channel_allowed_senders=tuple(n.strip().lstrip("+") for n in (
-            _env("CHANNEL_ALLOWED_SENDERS") or _env("WHATSAPP_ALLOWED_NUMBERS") or "").split(",") if n.strip()),
         seg_provider=(_env("SEG_PROVIDER", "manual") or "manual").lower(),
         worker_in_process=_flag("WORKER_IN_PROCESS", True),
         sample_fps=float(_env("SAMPLE_FPS", "2.0")),
+        max_frames=int(_env("MAX_FRAMES", "60")),
         reread_interval_s=float(_env("REREAD_INTERVAL_S", "10")),
         change_threshold=float(_env("CHANGE_THRESHOLD", "10.0")),
         sam_track=_flag("SAM_TRACK", True),
+        guest_idle_minutes=int(_env("GUEST_IDLE_MINUTES", "30")),
+        guest_max_clips=int(_env("GUEST_MAX_CLIPS", "5")),
+        user_session_days=int(_env("USER_SESSION_DAYS", "30")),
+        max_upload_mb=int(_env("MAX_UPLOAD_MB", "100")),
+        guest_sessions_per_hour=int(_env("GUEST_SESSIONS_PER_HOUR", "60")),
+        guest_uploads_per_hour=int(_env("GUEST_UPLOADS_PER_HOUR", "10")),
+        guest_questions_per_hour=int(_env("GUEST_QUESTIONS_PER_HOUR", "40")),
+        user_uploads_per_hour=int(_env("USER_UPLOADS_PER_HOUR", "30")),
+        user_questions_per_hour=int(_env("USER_QUESTIONS_PER_HOUR", "200")),
     )
 
 

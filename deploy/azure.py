@@ -29,7 +29,7 @@ ENV = "gaugelens-env"
 APP = "gaugelens"
 
 # .env keys that only make sense on this PC (the hosted app gets its own values below)
-LOCAL_ONLY = {"DATABASE_URL", "AZURE_DATABASE_URL", "EVIDENCE_DIR", "POSTGRES_PASSWORD", "DB_HOST_PORT", "CACHE_DIR"}
+LOCAL_ONLY = {"DATABASE_URL", "AZURE_DATABASE_URL", "NEON_LONDON_URL", "NEON_OHIO_URL", "EVIDENCE_DIR", "POSTGRES_PASSWORD", "DB_HOST_PORT", "CACHE_DIR"}
 HOSTED = {"WORKER_IN_PROCESS": "true", "EVIDENCE_STORE": "blob"}
 
 

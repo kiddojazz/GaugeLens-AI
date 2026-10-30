@@ -11,7 +11,6 @@ so a retried job resumes after the last frame that emitted frame_processed.
 
 import asyncio
 import logging
-from ..channels.conversation import notify_if_channel
 from dataclasses import dataclass, field
 from datetime import timedelta
 
@@ -20,7 +19,8 @@ from ..jobs.events import emit
 from ..llm import CacheMiss, ModelUnavailable, StructuredOutputError
 from .calls import record_call
 from .discovery import resolve_rois
-from .ingest import SampledFrame, changed, crop_signature, sample_frames
+from .identify import identify_clip
+from .ingest import SampledFrame, changed, crop_signature, effective_fps, photo_frames, sample_frames
 from .mapping import map_fields
 from .physics_stage import PhysicsStage
 from .relook import look_again
@@ -90,7 +90,7 @@ async def _read_display(ctx, clip_id: str, display: dict, instruments: list[dict
         return {"display_id": display["display_id"], "status": "reused", "readings": len(rows), "rows": rows}
 
     crop_png = await asyncio.to_thread(prepare_image, frame.jpeg, box)
-    crop_uri = ctx.evidence.write(f"{ctx.evidence.clip_dir(clip_id)}/crops/f{frame.index:05d}_{display['display_id']}.png",
+    crop_uri = await asyncio.to_thread(ctx.evidence.write, f"{ctx.evidence.clip_dir(clip_id)}/crops/f{frame.index:05d}_{display['display_id']}.png",
                                   crop_png)
     try:
         reading, meta = await read_display(ctx.client, frame.jpeg, context=display["context"] or "", box=box)
@@ -132,6 +132,20 @@ async def process_clip(job, ctx) -> None:
     clip = await pool.fetchrow("SELECT * FROM clips WHERE clip_id = $1", clip_id)
     if clip is None:
         raise ValueError(f"clip {clip_id} not found")
+    media = clip["media"] or {}
+    photos = media.get("kind") == "photos"
+    if photos:                                           # each photo is one frame
+        frames = await asyncio.to_thread(photo_frames, [(await asyncio.to_thread(ctx.evidence.read, p["uri"]), p["t"]) for p in media["photos"]])
+        fps, video_path = None, None
+    else:
+        video_path = await asyncio.to_thread(ctx.evidence.path, clip["source_uri"])
+        fps = await asyncio.to_thread(effective_fps, video_path, settings.sample_fps, settings.max_frames)
+        frames = await asyncio.to_thread(sample_frames, video_path, fps)
+    if clip["equipment_id"] is None:                     # nobody said what it is: work it out from the video
+        if not frames:
+            raise ValueError("the video has no frames to identify the equipment from")
+        await identify_clip(ctx, clip_id, frames)
+        clip = await pool.fetchrow("SELECT * FROM clips WHERE clip_id = $1", clip_id)
     displays = [dict(r) for r in await pool.fetch(_DISPLAYS, clip["equipment_id"])]
     if not displays:
         raise ValueError(f"equipment {clip['equipment_id']} has no digital displays registered")
@@ -139,18 +153,29 @@ async def process_clip(job, ctx) -> None:
     by_display = {d["display_id"]: [i for i in instruments if i["display_id"] == d["display_id"]] for d in displays}
 
     await pool.execute("UPDATE clips SET status = 'processing', fps_sampled = $2 WHERE clip_id = $1",
-                       clip_id, settings.sample_fps)
+                       clip_id, fps)
     await emit(pool, clip_id, "job_status", {"status": "processing", "job_id": job.job_id, "attempt": job.attempts})
     done = {r["fid"] for r in await pool.fetch(
         "SELECT payload->>'frame_id' AS fid FROM clip_events WHERE clip_id = $1 AND type = 'frame_processed'", clip_id)}
 
-    frames = await asyncio.to_thread(sample_frames, ctx.evidence.path(clip["source_uri"]), settings.sample_fps)
     states = {d["display_id"]: DisplayState() for d in displays}
-    rois = await resolve_rois(ctx, clip_id, displays, frames, ctx.evidence.path(clip["source_uri"])) if frames else {}
-    physics = await PhysicsStage.load(pool, dict(clip), max_relooks=settings.max_relooks_per_clip)
+    rois = await resolve_rois(ctx, clip_id, displays, frames, video_path, stills=photos) if frames else {}
+    physics = await PhysicsStage.load(pool, dict(clip), max_relooks=settings.max_relooks_per_clip,
+                                      timed=not photos or bool(media.get("timed")))
     displays_by_id = {d["display_id"]: d for d in displays}
     instruments_by_id = {i["instrument_id"]: i for i in instruments}
     totals = {"frames": len(frames), "read": 0, "reused": 0, "failed": 0, "readings": 0}
+
+    async def save_frame(frame: SampledFrame) -> tuple[str, str]:
+        """(frame_id, image_uri). Idempotent: a re-look may need the NEXT frame before the loop reaches it."""
+        frame_id = f"{clip_id}_f{frame.index:05d}"
+        image_uri = await asyncio.to_thread(ctx.evidence.write, f"{ctx.evidence.clip_dir(clip_id)}/frames/f{frame.index:05d}.jpg",
+                                            frame.jpeg)
+        await pool.execute(
+            """INSERT INTO frames (frame_id, clip_id, t_offset_s, ts, image_uri) VALUES ($1, $2, $3, $4, $5)
+               ON CONFLICT (frame_id) DO NOTHING""", frame_id, clip_id, frame.t_offset_s,
+            clip["recorded_at"] + timedelta(seconds=frame.t_offset_s), image_uri)
+        return frame_id, image_uri
 
     def relooker_for(position: int):
         async def relook(suspect: dict, attempt: int):
@@ -164,6 +189,7 @@ async def process_clip(job, ctx) -> None:
             instrument = instruments_by_id.get(suspect["instrument_id"])
             if display is None or box is None or instrument is None:
                 return None
+            await save_frame(use)                       # its readings reference the frame row
             result = await look_again(ctx, clip_id, use, display, box, instrument, suspect, attempt)
             if result is not None:                      # the re-read belongs to the frame it was read from
                 result.detail["frame_id"] = f"{clip_id}_f{use.index:05d}"
@@ -176,10 +202,7 @@ async def process_clip(job, ctx) -> None:
         ts = clip["recorded_at"] + timedelta(seconds=frame.t_offset_s)
         if frame_id in done:
             continue
-        image_uri = ctx.evidence.write(f"{ctx.evidence.clip_dir(clip_id)}/frames/f{frame.index:05d}.jpg", frame.jpeg)
-        await pool.execute(
-            """INSERT INTO frames (frame_id, clip_id, t_offset_s, ts, image_uri) VALUES ($1, $2, $3, $4, $5)
-               ON CONFLICT (frame_id) DO NOTHING""", frame_id, clip_id, frame.t_offset_s, ts, image_uri)
+        _, image_uri = await save_frame(frame)
         results = await asyncio.gather(*(_read_display(ctx, clip_id, d, by_display[d["display_id"]], frame,
                                                        frame_id, ts, states[d["display_id"]],
                                                        rois.get(d["display_id"], {}).get(frame.index))
@@ -212,7 +235,6 @@ async def process_clip(job, ctx) -> None:
 
     if physics:
         totals.update(physics.totals)
-    await notify_if_channel(pool, ctx.queue, clip_id, "clip_done")     # before the diagnoses: report first
     if physics:
         for anomaly_id in physics.anomalies.values():           # each confirmed fault gets a diagnosis
             await ctx.queue.enqueue("diagnose", {"anomaly_id": anomaly_id, "clip_id": clip_id},

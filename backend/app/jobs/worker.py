@@ -42,10 +42,8 @@ class JobContext:
 def default_handlers() -> dict:
     from ..agent.diagnose import diagnose_job
     from ..agent.evals import eval_job
-    from ..channels.conversation import ingest_job, notify_job
     from ..pipeline.process_clip import process_clip
-    return {"process_clip": process_clip, "diagnose": diagnose_job, "run_eval": eval_job,
-            "whatsapp_ingest": ingest_job, "notify": notify_job}
+    return {"process_clip": process_clip, "diagnose": diagnose_job, "run_eval": eval_job}
 
 
 class Worker:
@@ -83,8 +81,6 @@ class Worker:
             if clip_id:
                 if status == "dead" and job.kind == "process_clip":
                     await self.pool.execute("UPDATE clips SET status = 'failed' WHERE clip_id = $1", clip_id)
-                    from ..channels.conversation import notify_if_channel
-                    await notify_if_channel(self.pool, self.queue, clip_id, "clip_failed")
                 await emit(self.pool, clip_id, "job_status", {"status": status, "job_id": job.job_id, "kind": job.kind,
                                                                "error": f"{type(exc).__name__}: {str(exc)[:300]}"})
         else:

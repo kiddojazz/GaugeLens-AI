@@ -16,6 +16,7 @@ export default defineConfig({
   globalSetup: "./e2e/global-setup.ts",
   use: {
     baseURL: `http://127.0.0.1:${PORT}`,
+    storageState: "e2e/.auth/admin.json",         // signed in as the e2e admin (global-setup.ts); guest tests reset it
     channel: "msedge",
     viewport: { width: 1440, height: 1000 },
     trace: "retain-on-failure",

@@ -3,7 +3,7 @@
     load card -> agent <-> tools (budget: 8 calls, 3 frame views; frame images attached as user messages)
               -> compose (structured DiagnosisOutput) -> citation check --problems, 1 retry--> compose
               -> verified diagnosis | deterministic template ("needs expert review")
-The diagnosis is stored with decision 'pending': a human approves or rejects it (web or WhatsApp).
+The diagnosis is stored with decision 'pending': a human approves or rejects it.
 Every step is traced as a span (tracing.py): context, each model step, each tool call, compose, citation check.
 Job handler: kind 'diagnose', payload {"anomaly_id", "clip_id"}.
 """
@@ -29,7 +29,9 @@ MAX_CITATION_RETRIES = 1
 
 
 async def run_diagnosis(ctx, anomaly_id: str, *, eval_run_id: str | None = None,
-                        scenario_id: str | None = None) -> dict:
+                        scenario_id: str | None = None, final_attempt: bool = True) -> dict:
+    """final_attempt=False: a model outage raises, so the job retries. Each anomaly keeps one diagnosis, so a brief
+    outage mustn't settle it as the template. On the last attempt the template is stored instead of nothing."""
     pool, client = ctx.pool, ctx.client
     anomaly = await pool.fetchrow("SELECT * FROM anomalies WHERE anomaly_id = $1", anomaly_id)
     if anomaly is None:
@@ -46,7 +48,7 @@ async def run_diagnosis(ctx, anomaly_id: str, *, eval_run_id: str | None = None,
                                                      "summary": anomaly.get("summary")},
                          **{"gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "gaugelens-diagnosis",
                             "gen_ai.request.model": model}) as root:
-            result = await _diagnose(ctx, anomaly, model, tracer)
+            result = await _diagnose(ctx, anomaly, model, tracer, final_attempt)
             root.output = {k: result[k] for k in ("diagnosis_id", "verified", "headline", "tool_calls")}
     except BaseException as exc:
         await tracer.finish(error=f"{type(exc).__name__}: {exc}")
@@ -56,7 +58,7 @@ async def run_diagnosis(ctx, anomaly_id: str, *, eval_run_id: str | None = None,
     return result | {"run_id": tracer.run_id}
 
 
-async def _diagnose(ctx, anomaly: dict, model: str, tracer: RunTracer) -> dict:
+async def _diagnose(ctx, anomaly: dict, model: str, tracer: RunTracer, final_attempt: bool = True) -> dict:
     pool, client = ctx.pool, ctx.client
     anomaly_id = anomaly["anomaly_id"]
     with tracer.span("load_context", "context", input={"anomaly_id": anomaly_id, "clip_id": anomaly["clip_id"]}) as span:
@@ -73,8 +75,15 @@ async def _diagnose(ctx, anomaly: dict, model: str, tracer: RunTracer) -> dict:
         step_messages = messages if budget_left else messages + [{"role": "system", "content": BUDGET_NOTE}]
         with tracer.span(f"step {step + 1}", "llm", input=sanitize_messages(step_messages),
                          **{"gen_ai.operation.name": "chat", "gaugelens.tools_offered": budget_left}) as span:
-            message, meta = await client.chat(step_messages, tools=TOOL_SPECS if budget_left else None,
-                                              purpose="diagnose_step", prompt_version=PROMPT_VERSION)
+            try:
+                message, meta = await client.chat(step_messages, tools=TOOL_SPECS if budget_left else None,
+                                                  purpose="diagnose_step", prompt_version=PROMPT_VERSION)
+            except (ModelUnavailable, CacheMiss) as exc:
+                if not final_attempt:
+                    raise
+                log.warning("diagnosis step failed: %s", exc)
+                span.fail(f"{type(exc).__name__}: {exc}")
+                break
             span.record_call(meta)
             span.output = {"content": message["content"],
                            "tool_calls": [{"name": c["name"], "arguments": as_json(c["arguments"])}
@@ -131,6 +140,8 @@ async def _diagnose(ctx, anomaly: dict, model: str, tracer: RunTracer) -> dict:
                 span.record_call(meta)
                 span.output = diagnosis.model_dump()
             except (ModelUnavailable, StructuredOutputError, CacheMiss) as exc:
+                if not final_attempt and not isinstance(exc, StructuredOutputError):
+                    raise
                 log.warning("diagnosis compose failed: %s", exc)
                 span.fail(f"{type(exc).__name__}: {exc}")
                 diagnosis = None
@@ -170,10 +181,5 @@ async def _diagnose(ctx, anomaly: dict, model: str, tracer: RunTracer) -> dict:
 
 
 async def diagnose_job(job, ctx) -> None:
-    from ..channels.conversation import notify_if_channel
-
-    result = await run_diagnosis(ctx, job.payload["anomaly_id"])
-    if job.payload.get("clip_id"):
-        await notify_if_channel(ctx.pool, ctx.queue, job.payload["clip_id"], "diagnosis",
-                                 anomaly_id=job.payload["anomaly_id"])
+    result = await run_diagnosis(ctx, job.payload["anomaly_id"], final_attempt=job.attempts >= job.max_attempts)
     log.info("diagnosis for %s: %s", job.payload["anomaly_id"], json.dumps(result, default=str))

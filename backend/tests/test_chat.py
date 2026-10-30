@@ -13,6 +13,7 @@ from backend.app.db.pool import create_pool
 from backend.app.evidence.store import LocalEvidenceStore
 from backend.app.llm import ChatClient
 from backend.app.main import create_app
+from backend.tests.fakes import sign_in
 from backend.app.seed import seed_mock
 
 from .fakes import make_settings
@@ -86,6 +87,7 @@ def test_a_question_about_the_frame_in_view_gets_a_cited_checked_answer(tmp_path
     assert "What is the battery current here?" in sent and answer["content"] in sent     # the conversation so far
 
     with TestClient(create_app(settings=settings, start_worker=False)) as client:
+        sign_in(client, settings.database_url)
         history = client.get(f"/api/v1/clips/{clip_id}/chat").json()
         assert [m["role"] for m in history] == ["user", "assistant", "user", "assistant"]
         assert history[0]["frame_id"] == frame_id and history[0]["anomaly_id"] == anomaly_id
@@ -131,5 +133,15 @@ def test_counting_numbers_are_not_mistaken_for_readings():
 def test_the_api_rejects_unknown_clips_and_empty_questions(tmp_path, clean_db):
     settings = make_settings(tmp_path, database_url=clean_db, evidence_dir=tmp_path)
     with TestClient(create_app(settings=settings, start_worker=False)) as client:
+        sign_in(client, settings.database_url)
         assert client.post("/api/v1/clips/clip_nope/chat", json={"question": "hi"}).status_code == 404
         assert client.post("/api/v1/clips/clip_nope/chat", json={"question": ""}).status_code == 422
+
+
+def test_a_number_the_user_typed_doesnt_count_as_evidence(tmp_path, clean_db):
+    agent = ChatAgent()
+    settings, clip_id, _, _ = setup(tmp_path, clean_db, agent)
+    ask(settings, clean_db, agent, clip_id, "Isn't the current 987.6 A?")
+    agent.answer = "Yes, the current is 987.6 A."                   # repeats it as fact on the next turn
+    answer = ask(settings, clean_db, agent, clip_id, "So what is it?")
+    assert answer["verified"] is False and "number 987.6 not in any tool result" in answer["problems"]

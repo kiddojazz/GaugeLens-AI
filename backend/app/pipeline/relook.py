@@ -12,6 +12,7 @@ Attempt 3: the same on a neighbouring frame.
 The re-read value always comes from new pixels; attribution's candidate fix only chose what to look at.
 """
 
+import asyncio
 import io
 import re
 from dataclasses import dataclass, field
@@ -185,7 +186,8 @@ async def look_again(ctx, clip_id: str, frame: SampledFrame, display: dict, disp
         call_ids.append(meta.call_id)
         chosen = choose_read(reads.items, instrument.get("unit"), suspect.get("raw_text"))
         if chosen is not None and 1 <= chosen.image <= len(crops):
-            crop_uri = ctx.evidence.write(f"{ctx.evidence.clip_dir(clip_id)}/crops/{tag}.png", crops[chosen.image - 1])
+            crop_uri = await asyncio.to_thread(ctx.evidence.write, f"{ctx.evidence.clip_dir(clip_id)}/crops/{tag}.png",
+                                               crops[chosen.image - 1])
             group = groups[chosen.image - 1]
             decoded = decode_number(display_png, [d.box for d in group.digits],
                                     layout_text=chosen.raw_text if chosen.legible else suspect.get("raw_text"))
@@ -215,7 +217,7 @@ async def look_again(ctx, clip_id: str, frame: SampledFrame, display: dict, disp
     fld = mapped.get(instrument["instrument_id"])
     if fld is None:
         return None
-    crop_uri = ctx.evidence.write(f"{ctx.evidence.clip_dir(clip_id)}/crops/{tag}.png",
+    crop_uri = await asyncio.to_thread(ctx.evidence.write, f"{ctx.evidence.clip_dir(clip_id)}/crops/{tag}.png",
                                   prepare_image(frame.jpeg, box=display_box, pad_pct=0.03, min_width=1600))
     return RelookResult(attempt, "tight_crop", fld.value if fld.legible else None, fld.raw_text, fld.unit,
                         fld.legible, crop_uri, call_ids, {"page_hint": reading.page_hint})

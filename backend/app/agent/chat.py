@@ -6,7 +6,7 @@
       -> stored with its citations, verified flag and trace
 
 The same tools, guardrails and tracing as the diagnosis agent; read-only. Answers never act on anything:
-decisions stay with the Approve / Reject buttons. WhatsApp follow-up questions will call ask() too.
+decisions stay with the Approve / Reject buttons.
 """
 
 import logging
@@ -15,7 +15,7 @@ from ..ids import new_id
 from ..llm import CacheMiss, ModelUnavailable
 from ..pipeline.calls import record_call
 from .card import build_clip_card
-from .guardrails import _NUMBER, _UNSAFE, ID, _supported, ids_in, no_dashes, numbers_in
+from .guardrails import _NUMBER, ID, _supported, ids_in, no_dashes, numbers_in, unsafe_in
 from .tools import TOOL_SPECS, AgentTools
 from .tracing import RunTracer, as_json, sanitize_messages
 
@@ -76,8 +76,8 @@ def answer_problems(answer: str, evidence_text: str) -> list[str]:
             continue
         if not _supported(token, known):
             problems.append(f"number {token} not in any tool result")
-    if any(p.search(answer) for p in _UNSAFE):
-        problems.append("unsafe advice (opening enclosures or defeating protection)")
+    if unsafe_in(answer):
+        problems.append("unsafe advice (opening enclosures, touching live parts or defeating protection)")
     return problems
 
 
@@ -106,8 +106,7 @@ async def clear(pool, clip_id: str) -> None:
     await pool.execute("UPDATE chat_messages SET cleared = true WHERE clip_id = $1", clip_id)
 
 
-async def ask(ctx, clip_id: str, question: str, *, frame_id: str | None = None, anomaly_id: str | None = None,
-              channel: str = "web") -> dict:
+async def ask(ctx, clip_id: str, question: str, *, frame_id: str | None = None, anomaly_id: str | None = None) -> dict:
     """Answers one question and stores both turns. Returns the stored assistant message."""
     pool, client = ctx.pool, ctx.client
     question = question.strip()[:MAX_QUESTION]
@@ -121,8 +120,8 @@ async def ask(ctx, clip_id: str, question: str, *, frame_id: str | None = None, 
         anomaly_id = None
     earlier = (await history(pool, clip_id))[-HISTORY_TURNS:]
     await pool.execute(
-        """INSERT INTO chat_messages (message_id, clip_id, role, content, frame_id, anomaly_id, channel)
-           VALUES ($1, $2, 'user', $3, $4, $5, $6)""", new_id("msg_"), clip_id, question, frame_id, anomaly_id, channel)
+        """INSERT INTO chat_messages (message_id, clip_id, role, content, frame_id, anomaly_id)
+           VALUES ($1, $2, 'user', $3, $4, $5)""", new_id("msg_"), clip_id, question, frame_id, anomaly_id)
 
     tracer = await RunTracer.start(pool, kind="chat", anomaly_id=anomaly_id, clip_id=clip_id, title=question[:200],
                                    model=client.settings.read_model, prompt_version=PROMPT_VERSION)
@@ -138,9 +137,9 @@ async def ask(ctx, clip_id: str, question: str, *, frame_id: str | None = None, 
     await tracer.finish(verified=verified)
     message_id = new_id("msg_")
     row = await pool.fetchrow(
-        """INSERT INTO chat_messages (message_id, clip_id, role, content, citations, verified, problems, run_id, channel)
-           VALUES ($1, $2, 'assistant', $3, $4, $5, $6, $7, $8) RETURNING *""",
-        message_id, clip_id, answer, sorted(ids_in(answer)), verified, problems, tracer.run_id, channel)
+        """INSERT INTO chat_messages (message_id, clip_id, role, content, citations, verified, problems, run_id)
+           VALUES ($1, $2, 'assistant', $3, $4, $5, $6, $7) RETURNING *""",
+        message_id, clip_id, answer, sorted(ids_in(answer)), verified, problems, tracer.run_id)
     return dict(row)
 
 
@@ -157,8 +156,8 @@ async def _answer(ctx, clip, question, frame_id, anomaly_id, earlier, tracer) ->
     for m in earlier:                                                 # earlier turns: text only
         messages.append({"role": m["role"], "content": m["content"]})
     messages.append({"role": "user", "content": f"{question}\n\n{in_view}".strip()})
-    evidence_text = card + "\n" + in_view + "\n" + "\n".join(
-        m["content"] for m in earlier if m["role"] == "user" or m.get("verified"))
+    evidence_text = card + "\n" + in_view + "\n" + "\n".join(        # never the user's words: a number someone
+        m["content"] for m in earlier if m["role"] == "assistant" and m.get("verified"))   # typed proves nothing
     tools = AgentTools(pool, ctx.evidence, clip_id, clip["equipment_id"])
     tool_calls_used, answer = 0, ""
 

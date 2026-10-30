@@ -7,8 +7,8 @@ import { useApi } from "../hooks";
 export default function UploadPage() {
   const navigate = useNavigate();
   const equipment = useApi(() => api.equipment(), []);
-  const [equipmentId, setEquipmentId] = useState("");
-  const [file, setFile] = useState<File | null>(null);
+  const [equipmentId, setEquipmentId] = useState("auto");
+  const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -16,11 +16,11 @@ export default function UploadPage() {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!file || !equipmentId) return;
+    if (!files.length) return;
     setBusy(true);
     setError(null);
     try {
-      const { clip_id } = await api.upload(file, equipmentId);
+      const { clip_id } = await api.upload(files, equipmentId);
       navigate(`/clips/${clip_id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -33,7 +33,7 @@ export default function UploadPage() {
       <div className="page-head">
         <div>
           <h1>Upload clip</h1>
-          <p>A 30–120 second phone video of the equipment's displays. Hold the phone steady; SAM 3.1 finds and tracks each display.</p>
+          <p>A 30–120 second phone video of the equipment's displays, or one or more photos. SAM 3.1 finds each display.</p>
         </div>
       </div>
       <div className="grid-2">
@@ -41,20 +41,24 @@ export default function UploadPage() {
           <form className="stack" onSubmit={submit}>
             <label className="field">
               Equipment
-              <select value={equipmentId} onChange={(e) => setEquipmentId(e.target.value)} required>
-                <option value="">Select equipment…</option>
+              <span className="muted small" style={{ fontWeight: 400 }}>GaugeLens reads the nameplate and displays to work out what it is; pick a registered unit only to skip that.</span>
+              <select value={equipmentId} onChange={(e) => setEquipmentId(e.target.value)}>
+                <option value="auto">Identify automatically (recommended)</option>
                 {primary.map((e) => (
                   <option key={e.equipment_id} value={e.equipment_id}>{e.equipment_id} — {e.model ?? e.kind}</option>
                 ))}
               </select>
             </label>
             <label className="field">
-              Video (MP4 or MOV, up to 200 MB)
-              <input type="file" accept="video/mp4,video/quicktime,.mp4,.mov,.m4v,.3gp" onChange={(e) => setFile(e.target.files?.[0] ?? null)} required />
+              Video or photos
+              <span className="muted small" style={{ fontWeight: 400 }}>One video (MP4 or MOV, up to 100 MB), or up to 10 photos (JPEG, PNG or WebP). Photos of a screen that cycles pages are read as one clip, in order.</span>
+              <input type="file" multiple accept="video/mp4,video/quicktime,.mp4,.mov,.m4v,.3gp,image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+                     onChange={(e) => setFiles(Array.from(e.target.files ?? []))} required />
             </label>
+            {files.length > 1 && <span className="muted small">{files.length} photos selected</span>}
             <ErrorBox error={error ?? equipment.error} />
             <div className="row">
-              <button className="btn primary" type="submit" disabled={busy || !file || !equipmentId}>
+              <button className="btn primary" type="submit" disabled={busy || !files.length}>
                 {busy ? "Uploading…" : "Upload and process"}
               </button>
               <span className="muted small">Processing starts immediately; you'll see progress live.</span>

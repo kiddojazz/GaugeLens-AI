@@ -2,6 +2,7 @@
 import type { Span } from "./api";
 
 const paths = {
+  home: <path d="M4 11 12 4l8 7M6 9.5V20h12V9.5M10 20v-6h4v6" />,
   incidents: <path d="M12 3 2 20h20L12 3Zm0 6v5m0 3v.01" />,
   clips: <path d="M4 5h16v14H4zM10 9l5 3-5 3V9Z" />,
   upload: <path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v3h16v-3" />,
@@ -25,7 +26,12 @@ const paths = {
   arrow: <path d="M5 12h14m-6-6 6 6-6 6" />,
   chevron: <path d="M9 6l6 6-6 6" />,
   chat: <path d="M4 5h16v11H9l-5 4V5Zm4 5h8m-8 3h5" />,
+  scan: <path d="M4 8V5a1 1 0 0 1 1-1h3m8 0h3a1 1 0 0 1 1 1v3m0 8v3a1 1 0 0 1-1 1h-3m-8 0H5a1 1 0 0 1-1-1v-3M9 12a3 3 0 1 0 6 0 3 3 0 0 0-6 0Z" />,
+  mic: <path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3Zm-7 9a7 7 0 0 0 14 0M12 19v2" />,
+  speaker: <path d="M4 9h4l5-4v14l-5-4H4V9Zm13 0a4 4 0 0 1 0 6" />,
   send: <path d="M4 12 20 4l-5 16-3-7-8-1Z" />,
+  people: <path d="M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm-6 9a6 6 0 0 1 12 0M16 4.5a3.5 3.5 0 0 1 0 6.5M18 14.5a6 6 0 0 1 3 5.5" />,
+  lock: <path d="M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 0 1 7 0v3" />,
 };
 export type IconName = keyof typeof paths;
 

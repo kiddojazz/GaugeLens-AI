@@ -18,7 +18,7 @@ from datetime import timedelta
 from ..ids import new_id
 from ..jobs.events import emit
 from ..physics.engine import CheckResult, attribute, evaluate
-from ..physics.rules import RulePack, load_pack
+from ..physics.rules import PackDefaults, Rule, RulePack, load_pack
 from ..physics.state import RoleReading, RoleState
 
 log = logging.getLogger(__name__)
@@ -49,8 +49,36 @@ def pack_name_for(equipment: dict) -> str | None:
 def constants_for(equipment: dict) -> dict:
     def num(v):
         return float(v) if v is not None else None
+    limits = {k: num(v) for k, v in ((equipment.get("profile") or {}).get("limits") or {}).items()}
     return {"nominal_v": num(equipment.get("nominal_battery_v")), "rated_va": num(equipment.get("rated_va")),
-            "idle_w": num(equipment.get("idle_w"))}
+            "idle_w": num(equipment.get("idle_w")), **limits}       # nameplate limits of identified equipment
+
+
+# Units of running totals: whatever the device, these never go down (a drop means a misread or a reset).
+CUMULATIVE_UNITS = {"kwh", "wh", "mwh", "kvarh", "m3", "l", "gal", "h", "km", "mi"}
+
+
+def _cumulative(instrument: dict) -> bool:
+    unit = "".join((instrument.get("unit") or "").split()).lower().replace("³", "3")
+    return bool((instrument.get("match") or {}).get("cumulative")) or unit in CUMULATIVE_UNITS
+
+
+def pack_for(equipment: dict, instruments: list[dict]) -> RulePack | None:
+    """The equipment kind's rule pack, plus generic rules for cumulative readings it doesn't cover (identified
+    equipment of any kind: a counter never goes backwards). None when there is nothing to check."""
+    name = pack_name_for(equipment)
+    pack = load_pack(name) if name else None
+    covered = {role for rule in pack.rules for role in rule.inputs} if pack else set()
+    generic = [Rule(id=f"generic.{i['physics_role']}_monotonic", kind="transition", inputs=[i["physics_role"]],
+                    description=f"{i.get('label') or i['physics_role']} is a running total: it never goes down",
+                    check=f"delta({i['physics_role']}) >= 0", severity_on_persist="warning")
+               for i in instruments if _cumulative(i) and i["physics_role"] not in covered]
+    if pack is None:
+        if not generic:
+            return None
+        return RulePack(equipment_kind=equipment["kind"], prefix="generic.", rules=generic,
+                        defaults=PackDefaults(max_age_s=60, requires_steady=False))
+    return pack.model_copy(update={"rules": [*pack.rules, *generic]}) if generic else pack
 
 
 class PhysicsStage:
@@ -66,15 +94,25 @@ class PhysicsStage:
         self.relooked: dict[str, str] = {}           # reading_id -> re-look outcome (never re-look twice)
 
     @classmethod
-    async def load(cls, pool, clip: dict, max_relooks: int = 10) -> "PhysicsStage | None":
+    async def load(cls, pool, clip: dict, max_relooks: int = 10, timed: bool = True) -> "PhysicsStage | None":
+        """timed=False: photos without capture times. Rules that divide by the time between readings (rates)
+        can't run; the rest do, with values from one photo never combined with another's (photos are far apart)."""
         equipment = await pool.fetchrow("SELECT * FROM equipment WHERE equipment_id = $1", clip["equipment_id"])
         if equipment is None:
             return None
-        name = pack_name_for(dict(equipment))
-        if name is None:
-            log.info("no physics rule pack for equipment kind %s", equipment["kind"])
+        instruments = [dict(r) for r in await pool.fetch(
+            """SELECT physics_role, label, unit, match FROM instruments
+               WHERE equipment_id = $1 OR equipment_id IN (SELECT equipment_id FROM equipment WHERE linked_equipment_id = $1)""",
+            equipment["equipment_id"])]
+        pack = pack_for(dict(equipment), instruments)
+        if pack is not None and not timed:
+            pack = pack.model_copy(update={"rules": [r for r in pack.rules
+                                                     if "delta_t" not in f"{r.check} {r.check_ratio}"]})
+            pack = pack if pack.rules else None
+        if pack is None:
+            log.info("no physics rules apply to equipment %s (%s)", equipment["equipment_id"], equipment["kind"])
             return None
-        return cls(pool, dict(clip), dict(equipment), load_pack(name), max_relooks)
+        return cls(pool, dict(clip), dict(equipment), pack, max_relooks)
 
     def _feed(self, row: dict, t: float) -> None:
         if row.get("physics_role") and row.get("value") is not None:
@@ -121,7 +159,8 @@ class PhysicsStage:
                 corrections.append(correction)
 
         compact = await self._store(frame_id, t, results, attribution, relook, outcome_for_fail)
-        if corrections or (relook and outcome_for_fail == "misread_fixed"):   # failed rules, rechecked on the fix
+        # failed rules, rechecked on the fix; a re-look that only confirmed the value changed nothing to recheck
+        if any("row" in c for c in corrections) or (relook and outcome_for_fail == "misread_fixed"):
             failed = {r.rule_id for r in results if r.status == "fail"}
             rechecked = [r for r in evaluate(self.pack, self.state, self.constants, now=t, roles=fresh_roles)
                          if r.rule_id in failed]
@@ -181,7 +220,10 @@ class PhysicsStage:
                 trial_state = (self.state.with_previous_value(role, value) if previous
                                else self.state.with_value(role, value))
                 trial = evaluate(self.pack, trial_state, self.constants, now=t, roles={role})
-                if all(tr.status == "pass" for tr in trial if tr.rule_id in failing):
+                # the rules this value feeds: the failed ones must now pass, and none may start failing. Failures in
+                # rules that don't use it can't be fixed by re-reading it, so they don't count against the fix.
+                repaired = [tr for tr in trial if tr.rule_id in failing]
+                if repaired and all(tr.status == "pass" for tr in repaired) and not any(tr.status == "fail" for tr in trial):
                     passing.append((value, raw, strategy))
             if len(passing) == 1:
                 entry["value"], entry["raw_text"], entry["strategy"] = passing[0]

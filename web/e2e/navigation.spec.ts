@@ -1,7 +1,7 @@
 import { expect, expectNoHorizontalScroll, sample, test } from "./fixtures";
 
 const PAGES = [
-  { link: "Incidents", hash: "#/", heading: "Incidents" },
+  { link: "Incidents", hash: "#/incidents", heading: "Incidents" },
   { link: "Clips", hash: "#/clips", heading: "Clips" },
   { link: "Upload", hash: "#/upload", heading: "Upload clip" },
   { link: "Equipment", hash: "#/equipment", heading: "Equipment" },
@@ -38,7 +38,7 @@ test("top bar shows the model and a healthy database", async ({ page, request })
 });
 
 test("'Upload clip' buttons lead to the upload form", async ({ page }) => {
-  for (const start of ["/", "/#/clips"]) {
+  for (const start of ["/#/incidents", "/#/clips"]) {
     await page.goto(start);
     await page.locator(".page-head").getByRole("link", { name: "Upload clip" }).click();
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("Upload clip");

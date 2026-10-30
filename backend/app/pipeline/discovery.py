@@ -108,9 +108,33 @@ async def _detect_once(ctx, first: SampledFrame, group: list[dict], prompt: str)
     return matches, unassigned, meta
 
 
+async def _detect_each(ctx, frames: list[SampledFrame], group: list[dict], prompt: str):
+    """Photos: each one is framed differently, so the displays are found on every photo (one SAM call each).
+    ({display_id: {frame_index: box}}, {display_id: first hit}, unassigned, meta) or None."""
+    tracks: dict = defaultdict(dict)
+    hits, unassigned, meta = {}, [], None
+    for frame in frames:
+        once = await _detect_once(ctx, frame, group, prompt)
+        if once is None:
+            continue
+        matches, extra, meta = once
+        for display_id, det in matches.items():
+            tracks[display_id][frame.index] = det.xywh
+            hits.setdefault(display_id, det)
+        unassigned += extra if frame is frames[0] else []
+    if not tracks:
+        return None
+    for display_id, track in tracks.items():          # a photo where a display wasn't found keeps the nearest box
+        known = sorted(track)
+        for frame in frames:
+            if frame.index not in track:
+                track[frame.index] = track[min(known, key=lambda k: abs(k - frame.index))]
+    return dict(tracks), hits, unassigned, meta
+
+
 async def resolve_rois(ctx, clip_id: str, displays: list[dict], frames: list[SampledFrame],
-                       video_path: Path | None = None) -> dict[str, dict[int, tuple]]:
-    """{display_id: {sampled frame index: (x, y, w, h)}} for this clip."""
+                       video_path: Path | None = None, stills: bool = False) -> dict[str, dict[int, tuple]]:
+    """{display_id: {sampled frame index: (x, y, w, h)}} for this clip. stills=True: photos, detected one by one."""
     pool = ctx.pool
     stored = {r["display_id"]: r for r in await pool.fetch("SELECT * FROM clip_rois WHERE clip_id = $1", clip_id)}
     if stored and len(stored) == len(displays):                        # a retried job reuses its regions
@@ -129,7 +153,9 @@ async def resolve_rois(ctx, clip_id: str, displays: list[dict], frames: list[Sam
         for prompt in sorted({d["sam_prompt"] or "digital display" for d in displays}):
             group = [d for d in displays if (d["sam_prompt"] or "digital display") == prompt]
             result = None
-            if ctx.settings.sam_track and video_path is not None and hasattr(ctx.sam, "track_video"):
+            if stills and len(frames) > 1:
+                result = await _detect_each(ctx, frames, group, prompt)
+            elif ctx.settings.sam_track and video_path is not None and hasattr(ctx.sam, "track_video"):
                 result = await _track(ctx, video_path, frames, group, prompt)
             if result is not None:
                 tracks, hits, extra, meta = result
@@ -137,7 +163,8 @@ async def resolve_rois(ctx, clip_id: str, displays: list[dict], frames: list[Sam
                 for display_id, track in tracks.items():
                     det = hits[display_id]
                     regions[display_id] = {"static": track[first.index], "track": track,
-                                           "hit": {"confidence": det.confidence, "sam_object_id": det.object_id,
+                                           "hit": {"confidence": det.confidence,
+                                                   "sam_object_id": getattr(det, "object_id", None),
                                                    "model_call_id": meta.call_id}}
                 unassigned += extra
                 continue

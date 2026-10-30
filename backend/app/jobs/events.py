@@ -4,7 +4,7 @@ across processes, survives reconnects (Last-Event-ID) and replays identically fo
 import asyncpg
 
 EVENT_TYPES = ("job_status", "displays_detected", "frame_processed", "reading", "read_failed", "physics_check", "relook_attempt",
-               "anomaly", "diagnosis", "clip_done", "decision", "message")
+               "anomaly", "diagnosis", "clip_done", "decision", "message", "identified")
 
 
 async def emit(conn: asyncpg.Pool | asyncpg.Connection, clip_id: str, type_: str, payload: dict) -> int:

@@ -1,6 +1,33 @@
 // Typed client for the GaugeLens API (/api/v1). Same origin: Vite proxies in dev, FastAPI serves the build.
+// Accounts ride on an httpOnly cookie. A guest's session token lives only in this module's memory, so a refresh
+// or closed tab ends the session (and the server deletes its data): see auth.tsx.
 
 const BASE = "/api/v1";
+export const SESSION_HEADER = "X-GaugeLens-Session";
+export const SESSION_ENDED = "gaugelens:session-ended";
+
+let guestToken: string | null = null;
+export const setGuestToken = (token: string | null) => { guestToken = token; };
+export const getGuestToken = () => guestToken;
+
+export type Me = {
+  kind: "guest" | "user" | "admin";
+  email: string | null;
+  session_id: string;
+  idle_minutes: number;
+  clips_left?: number;
+  clips_moved?: number;
+};
+export type GuestSession = Me & { token: string };
+
+export type People = {
+  users: { user_id: string; email: string; role: "user" | "admin"; created_at: string; last_login_at: string | null;
+           last_seen_at: string | null; clips: number; questions: number }[];
+  guests: { session_id: string; created_at: string; last_seen_at: string; clips: number; questions: number }[];
+  purged_last_7_days: { sessions: number; last: string | null };
+  unowned: { source_channel: string; clips: number }[];
+  idle_minutes: number;
+};
 
 export type Health = {
   status: string;
@@ -9,9 +36,22 @@ export type Health = {
   worker: string;
 };
 
+export type Identification = {
+  equipment_id: string;
+  created: boolean;
+  kind: string;
+  brand: string | null;
+  model: string | null;
+  description: string;
+  confidence: "low" | "medium" | "high";
+  evidence: string[];
+  displays: { label: string; description: string; values: { label: string; quantity: string; unit: string | null; register_code: string | null }[] }[];
+};
+
 export type Clip = {
   clip_id: string;
-  equipment_id: string;
+  equipment_id: string | null;
+  identification?: Identification | null;
   equipment_kind?: string;
   status: "queued" | "processing" | "done" | "failed";
   source_channel: string;
@@ -21,6 +61,8 @@ export type Clip = {
   anomalies?: number;
   corrections?: number;
   progress?: number | null;
+  owner?: string | null;          // admins only: the account's email, "guest", or null (a seed or imported clip)
+  media?: { kind: "photos"; timed: boolean; photos: { uri: string; t: number }[] } | null;   // null: a video
 };
 
 export type ClipDetail = {
@@ -30,7 +72,7 @@ export type ClipDetail = {
 };
 
 export type FrameBox = { display_id: string; label: string; box: [number, number, number, number]; source: string; tracked: boolean };
-export type Frame = { frame_id: string; index: number; t: number; image_uri: string; boxes: FrameBox[] };
+export type Frame = { frame_id: string; index: number; t: number; image_uri: string; boxes: FrameBox[]; unmapped?: string[] };
 export type Frames = { clip_id: string; frame_size: { w: number; h: number } | null; frames: Frame[] };
 
 export type Reading = {
@@ -108,7 +150,7 @@ export type Anomaly = {
   kind: string;
   severity: "info" | "warning" | "critical";
   summary: string;
-  evidence: { check_ids: string[]; reading_ids: string[]; frame_ids: string[] };
+  evidence: { check_ids?: string[]; reading_ids?: string[]; frame_ids?: string[] } | null;
   clip_id: string;
   rule_id: string;
   is_simulated: boolean;
@@ -157,6 +199,8 @@ export type Equipment = {
   idle_w: number | null;
   controller_type: string | null;
   linked_equipment_id: string | null;
+  profile: { source?: string; brand?: string | null; model?: string | null; description?: string; confidence?: string;
+             limits?: Record<string, number>; evidence?: string[]; corrected?: boolean } | null;
   displays: Display[];
 };
 
@@ -255,8 +299,11 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${BASE}${path}`, init);
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (guestToken) headers.set(SESSION_HEADER, guestToken);
+  const response = await fetch(`${BASE}${path}`, { ...init, headers });
+  if (response.status === 401 && !path.startsWith("/auth/")) window.dispatchEvent(new Event(SESSION_ENDED));
   if (!response.ok) {
     let detail = response.statusText;
     try {
@@ -289,8 +336,10 @@ export const api = {
   diagnosis: (anomalyId: string) => request<Diagnosis>(`/anomalies/${anomalyId}/diagnosis`),
   diagnose: (anomalyId: string) => request<{ job_id: string }>(`/anomalies/${anomalyId}/diagnose`, { method: "POST" }),
   decide: (diagnosisId: string, decision: "approved" | "rejected", note: string) =>
-    request<Diagnosis>(`/diagnoses/${diagnosisId}/decision`, json({ decision, note: note || null, decided_by: "web" })),
+    request<Diagnosis>(`/diagnoses/${diagnosisId}/decision`, json({ decision, note: note || null })),
   equipment: () => request<Equipment[]>("/equipment"),
+  correctEquipment: (id: string, fix: { model?: string; kind?: string }) =>
+    request<Equipment>(`/equipment/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(fix) }),
   traces: (params: { anomaly_id?: string; eval_run_id?: string } = {}) =>
     request<AgentRun[]>(`/traces?${new URLSearchParams(params as Record<string, string>)}`),
   trace: (runId: string) => request<Trace>(`/traces/${runId}`),
@@ -302,13 +351,31 @@ export const api = {
   ask: (clipId: string, question: string, frameId?: string | null, anomalyId?: string | null) =>
     request<ChatMessage>(`/clips/${clipId}/chat`, json({ question, frame_id: frameId ?? null, anomaly_id: anomalyId ?? null })),
   clearChat: (clipId: string) => request<void>(`/clips/${clipId}/chat`, { method: "DELETE" }),
-  upload: (file: File, equipmentId: string) => {
+  me: () => request<Me>("/auth/me"),
+  startGuest: () => request<GuestSession>("/auth/guest", { method: "POST" }),
+  register: (email: string, password: string) => request<Me>("/auth/register", json({ email, password })),
+  login: (email: string, password: string) => request<Me>("/auth/login", json({ email, password })),
+  logout: () => request<void>("/auth/logout", { method: "POST" }),
+  people: () => request<People>("/admin/people"),
+  /** One video, or 1-10 photos (one clip; each photo is a frame). */
+  upload: (files: File | File[], equipmentId: string, simulated = false) => {
     const form = new FormData();
-    form.append("file", file);
-    form.append("equipment_id", equipmentId);
+    for (const file of Array.isArray(files) ? files : [files]) form.append("file", file);
+    form.append("equipment_id", equipmentId || "auto");
+    if (simulated) form.append("simulated", "true");
     return request<{ clip_id: string; job_id: string }>("/clips", { method: "POST", body: form });
   },
 };
 
-export const evidenceUrl = (uri: string) => `${BASE}/evidence?uri=${encodeURIComponent(uri)}`;
-export const eventsUrl = (clipId: string) => `${BASE}/clips/${clipId}/events`;
+// <img>, <video> and EventSource can't send headers, so a guest's session goes in the query string.
+const withSession = (url: string) => (guestToken ? `${url}${url.includes("?") ? "&" : "?"}s=${encodeURIComponent(guestToken)}` : url);
+export const evidenceUrl = (uri: string) => withSession(`${BASE}/evidence?uri=${encodeURIComponent(uri)}`);
+export const eventsUrl = (clipId: string) => withSession(`${BASE}/clips/${clipId}/events`);
+
+/** Ends the guest session even while the page unloads (sendBeacon can't set headers: the token is the body). */
+export function endGuestSession(token: string) {
+  const url = `${BASE}/auth/guest/end`;
+  if (!navigator.sendBeacon?.(url, new Blob([token], { type: "text/plain" }))) {
+    void fetch(url, { method: "POST", body: token, keepalive: true }).catch(() => undefined);
+  }
+}

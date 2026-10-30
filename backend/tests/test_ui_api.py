@@ -10,6 +10,7 @@ from backend.app.jobs.queue import PostgresJobQueue
 from backend.app.jobs.worker import Worker
 from backend.app.llm import ChatClient
 from backend.app.main import create_app
+from backend.tests.fakes import sign_in
 from backend.app.pipeline.clips import create_clip
 from backend.app.seed import seed_mock
 from backend.tests.test_process_clip import CLAMP, OUTPUT_PAGE_MISREAD, DigitSam, RelookAwareDisplays, setup
@@ -33,11 +34,13 @@ def test_ui_endpoints_show_a_processed_clip_and_its_correction(tmp_path, clean_d
 
     clip_id = asyncio.run(process())
     with TestClient(create_app(settings=settings, start_worker=False)) as client:
+        sign_in(client, settings.database_url)
         clips = client.get("/api/v1/clips").json()
         assert clips[0]["clip_id"] == clip_id and clips[0]["frames"] == 4 and clips[0]["corrections"] >= 1
 
         frames = client.get(f"/api/v1/clips/{clip_id}/frames").json()
         assert len(frames["frames"]) == 4 and frames["frame_size"] == {"w": 1400, "h": 820}
+        assert [f["unmapped"] for f in frames["frames"]] == [["=88kWh"], [], ["=88kWh"], []]   # the clamp's stray kWh, shown not used
         assert {b["display_id"] for b in frames["frames"][0]["boxes"]} == {"inv_mock_lcd", "clamp_mock_lcd"}
 
         checks = client.get(f"/api/v1/clips/{clip_id}/checks").json()
