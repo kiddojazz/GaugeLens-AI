@@ -61,6 +61,7 @@ export type Clip = {
   anomalies?: number;
   corrections?: number;
   progress?: number | null;
+  is_public?: boolean;            // an example every visitor can read
   owner?: string | null;          // admins only: the account's email, "guest", or null (a seed or imported clip)
   media?: { kind: "photos"; timed: boolean; photos: { uri: string; t: number }[] } | null;   // null: a video
 };
@@ -69,6 +70,8 @@ export type ClipDetail = {
   clip: Clip & { recorded_at: string; source_uri: string };
   job: { job_id: string; status: string; attempts: number; progress: number; last_error: string | null } | null;
   counts: { frames: number; readings: number };
+  can_edit?: boolean;
+  can_publish?: boolean;
 };
 
 export type FrameBox = { display_id: string; label: string; box: [number, number, number, number]; source: string; tracked: boolean };
@@ -159,6 +162,7 @@ export type Anomaly = {
   decision: "pending" | "approved" | "rejected" | null;
   headline: string | null;
   diagnose_job?: string | null;
+  can_edit?: boolean;
 };
 
 export type DiagnosisOutput = {
@@ -202,6 +206,7 @@ export type Equipment = {
   profile: { source?: string; brand?: string | null; model?: string | null; description?: string; confidence?: string;
              limits?: Record<string, number>; evidence?: string[]; corrected?: boolean } | null;
   displays: Display[];
+  usable?: boolean;               // false: on show in an example clip, but not the caller's to scan against
 };
 
 export type AgentRun = {
@@ -351,6 +356,8 @@ export const api = {
   ask: (clipId: string, question: string, frameId?: string | null, anomalyId?: string | null) =>
     request<ChatMessage>(`/clips/${clipId}/chat`, json({ question, frame_id: frameId ?? null, anomaly_id: anomalyId ?? null })),
   clearChat: (clipId: string) => request<void>(`/clips/${clipId}/chat`, { method: "DELETE" }),
+  publishClip: (id: string, isPublic: boolean) =>
+    request<{ is_public: boolean }>(`/clips/${id}/public`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ public: isPublic }) }),
   me: () => request<Me>("/auth/me"),
   startGuest: () => request<GuestSession>("/auth/guest", { method: "POST" }),
   register: (email: string, password: string) => request<Me>("/auth/register", json({ email, password })),

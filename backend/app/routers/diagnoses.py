@@ -14,7 +14,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from ..access import Principal, current_principal, require_anomaly, visible
+from ..access import Principal, can_edit_clip, current_principal, readable, require_anomaly
 from ..jobs.events import emit
 from .clips import _jsonable, _state
 
@@ -36,7 +36,7 @@ async def list_anomalies(request: Request, clip_id: str | None = None, equipment
            LEFT JOIN diagnoses d USING (anomaly_id) LEFT JOIN clips c ON c.clip_id = a.clip_id
            WHERE ($1::text IS NULL OR a.clip_id = $1) AND ($2::text IS NULL OR a.equipment_id = $2)
              AND ($1::text IS NOT NULL OR c.source_channel IS DISTINCT FROM 'eval')   -- eval scenarios: Evaluations page
-             AND {visible('c', 3)}
+             AND {readable('c', 3)}
            ORDER BY a.ts_start DESC LIMIT 200""", clip_id, equipment_id, *principal.scope())
     return [_jsonable(dict(r)) for r in rows]
 
@@ -53,13 +53,14 @@ async def get_anomaly(request: Request, anomaly_id: str, principal: Principal = 
            WHERE a.anomaly_id = $1""", anomaly_id)
     if row is None:
         raise HTTPException(status_code=404, detail="anomaly not found")
-    return _jsonable(dict(row))
+    return {**_jsonable(dict(row)), "can_edit": bool(row["clip_id"]) and await can_edit_clip(state.pool, principal, row["clip_id"])
+            or principal.is_admin}
 
 
 @router.post("/anomalies/{anomaly_id}/diagnose", status_code=202)
 async def diagnose(request: Request, anomaly_id: str, principal: Principal = Depends(current_principal)):
     state = _state(request)
-    await require_anomaly(state.pool, principal, anomaly_id)
+    await require_anomaly(state.pool, principal, anomaly_id, edit=True)
     anomaly = await state.pool.fetchrow("SELECT clip_id FROM anomalies WHERE anomaly_id = $1", anomaly_id)
     if anomaly is None:
         raise HTTPException(status_code=404, detail="anomaly not found")
@@ -89,7 +90,8 @@ async def get_diagnosis(request: Request, diagnosis_id: str, principal: Principa
 @router.post("/diagnoses/{diagnosis_id}/decision")
 async def decide(request: Request, diagnosis_id: str, body: Decision, principal: Principal = Depends(current_principal)):
     state = _state(request)
-    await _diagnosis(state.pool, principal, "diagnosis_id", diagnosis_id)
+    found = await _diagnosis(state.pool, principal, "diagnosis_id", diagnosis_id)
+    await require_anomaly(state.pool, principal, found["anomaly_id"], edit=True)
     decided_by = principal.label
     row = await state.pool.fetchrow(
         """UPDATE diagnoses SET decision = $2, decided_by = $3, decided_at = $4, decision_note = $5

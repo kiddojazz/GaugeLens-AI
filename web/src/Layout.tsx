@@ -47,8 +47,9 @@ function GuestBanner() {
       )}
       {me?.kind === "guest" && pathname !== "/account" && (
         <div className="guest-banner" role="note">
-          <strong>Private guest session.</strong> Only you can see your scans and chat, and they're deleted when you
-          refresh or close this page, or after {me.idle_minutes} minutes without activity.{" "}
+          <strong>Private guest session{pathname === "/" ? ":" : "."}</strong>{" "}
+          {pathname === "/" ? "scans are deleted when you leave." : <>Only you can see your scans and chat, and they're deleted when you
+          refresh or close this page, or after {me.idle_minutes} minutes without activity.</>}{" "}
           <Link to={`/account?next=${encodeURIComponent(pathname)}&mode=register`}>Create a free account</Link> to keep them.
         </div>
       )}
@@ -72,7 +73,7 @@ export default function Layout() {
           </div>
           <div>
             <div className="brand-name">GaugeLens</div>
-            <div className="brand-sub">Verified readings from any camera</div>
+            <div className="brand-sub">Verified readings from any digital display</div>
           </div>
         </Link>
         <nav className="nav">

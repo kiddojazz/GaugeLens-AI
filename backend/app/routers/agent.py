@@ -18,7 +18,8 @@ from types import SimpleNamespace
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from ..access import Principal, admin_principal, current_principal, require_anomaly, require_clip, visible
+from ..access import (Principal, admin_principal, can_edit_clip, current_principal, require_anomaly, require_clip,
+                      visible)
 from ..agent import chat
 from ..limits import caller_key, enforce
 
@@ -35,19 +36,27 @@ _RUN_COLUMNS = """r.run_id, r.kind, r.anomaly_id, r.diagnosis_id, r.eval_run_id,
                   COALESCE(d.output->>'headline', r.title) AS headline"""
 
 
+async def _owns_anomaly(pool, principal: Principal, anomaly_id: str) -> bool:
+    clip_id = await pool.fetchval("SELECT clip_id FROM anomalies WHERE anomaly_id = $1", anomaly_id)
+    return bool(clip_id) and await can_edit_clip(pool, principal, clip_id)
+
+
 @router.get("/traces")
 async def list_traces(request: Request, anomaly_id: str | None = None, eval_run_id: str | None = None,
                       limit: int = Query(50, le=200), principal: Principal = Depends(current_principal)):
     state = _state(request)
+    own = principal.is_admin
     if anomaly_id:
         await require_anomaly(state.pool, principal, anomaly_id)
+        own = own or await _owns_anomaly(state.pool, principal, anomaly_id)
     elif not principal.is_admin:
         raise HTTPException(status_code=403, detail="admins only")
     rows = await state.pool.fetch(
         f"""SELECT {_RUN_COLUMNS} FROM agent_runs r
             LEFT JOIN anomalies a USING (anomaly_id) LEFT JOIN diagnoses d ON d.diagnosis_id = r.diagnosis_id
             WHERE ($1::text IS NULL OR r.anomaly_id = $1) AND ($2::text IS NULL OR r.eval_run_id = $2)
-            ORDER BY r.started_at DESC LIMIT $3""", anomaly_id, eval_run_id, limit)
+              AND ($4 OR r.kind <> 'chat')                 -- on an example clip, other visitors' questions stay theirs
+            ORDER BY r.started_at DESC LIMIT $3""", anomaly_id, eval_run_id, limit, own)
     return [_jsonable(dict(r)) for r in rows]
 
 
@@ -58,7 +67,8 @@ async def get_trace(request: Request, run_id: str, principal: Principal = Depend
         f"""SELECT {_RUN_COLUMNS} FROM agent_runs r
             LEFT JOIN anomalies a USING (anomaly_id) LEFT JOIN diagnoses d ON d.diagnosis_id = r.diagnosis_id
             LEFT JOIN clips c ON c.clip_id = COALESCE(a.clip_id, r.clip_id)
-            WHERE r.run_id = $1 AND {visible('c', 2)}""", run_id, *principal.scope())
+            WHERE r.run_id = $1 AND ({visible('c', 2)} OR (c.is_public AND r.kind <> 'chat'))""",
+        run_id, *principal.scope())
     if run is None:
         raise HTTPException(status_code=404, detail="trace not found")
     spans = await state.pool.fetch(
@@ -131,34 +141,45 @@ class Question(BaseModel):
     anomaly_id: str | None = None
 
 
+async def _conversation(pool, principal: Principal, clip_id: str) -> str | None:
+    """Whose conversation this is: None for the clip's owner or an admin, else the visitor's own on an example clip."""
+    await require_clip(pool, principal, clip_id)
+    return None if await can_edit_clip(pool, principal, clip_id) else principal.user_id or principal.session_id
+
+
+def _message(m: dict) -> dict:
+    """A visitor's chat run isn't openable (traces of an example clip's chats are its owner's), so no link to it."""
+    return _jsonable({k: (None if k == "run_id" and m.get("visitor") else v) for k, v in m.items() if k != "visitor"})
+
+
 @router.get("/clips/{clip_id}/chat")
 async def get_chat(request: Request, clip_id: str, principal: Principal = Depends(current_principal)):
     state = _state(request)
-    await require_clip(state.pool, principal, clip_id)
-    return [_jsonable(m) for m in await chat.history(state.pool, clip_id)]
+    visitor = await _conversation(state.pool, principal, clip_id)
+    return [_message(m) for m in await chat.history(state.pool, clip_id, visitor)]
 
 
 @router.post("/clips/{clip_id}/chat")
 async def ask(request: Request, clip_id: str, body: Question, principal: Principal = Depends(current_principal)):
     """Answers synchronously (a few seconds: the agent may call tools). The question is stored first."""
     state = _state(request)
-    await require_clip(state.pool, principal, clip_id)
+    visitor = await _conversation(state.pool, principal, clip_id)
     if not principal.is_admin:
         key, is_guest = caller_key(principal, request)
         enforce(request, f"{key}:questions", state.settings.guest_questions_per_hour if is_guest
                 else state.settings.user_questions_per_hour, "questions")
     ctx = SimpleNamespace(pool=state.pool, client=state.client, evidence=state.evidence)
     try:
-        message = await chat.ask(ctx, clip_id, body.question, frame_id=body.frame_id, anomaly_id=body.anomaly_id)
+        message = await chat.ask(ctx, clip_id, body.question, frame_id=body.frame_id, anomaly_id=body.anomaly_id,
+                                 visitor=visitor)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _jsonable(message)
+    return _message(message)
 
 
 @router.delete("/clips/{clip_id}/chat", status_code=204)
 async def clear_chat(request: Request, clip_id: str, principal: Principal = Depends(current_principal)):
     state = _state(request)
-    await require_clip(state.pool, principal, clip_id)
-    await chat.clear(state.pool, clip_id)
+    await chat.clear(state.pool, clip_id, await _conversation(state.pool, principal, clip_id))

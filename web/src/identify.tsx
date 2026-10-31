@@ -11,7 +11,7 @@ const KINDS: [string, string][] = [
 ];
 const CONFIDENCE_TONE = { high: "ok", medium: "info", low: "warn" } as const;
 
-export function IdentificationCard({ identification, processing }: { identification?: Identification | null; processing: boolean }) {
+export function IdentificationCard({ identification, processing, editable = true }: { editable?: boolean; identification?: Identification | null; processing: boolean }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState("");
   const [kind, setKind] = useState("");
@@ -82,7 +82,7 @@ export function IdentificationCard({ identification, processing }: { identificat
           {ident.evidence.length > 0 && (
             <div className="small muted">From the printed text: {ident.evidence.slice(0, 5).map((e) => `“${e}”`).join(", ")}</div>
           )}
-          <div><button className="btn small-btn" onClick={startEdit}>Correct this</button></div>
+          {editable && <div><button className="btn small-btn" onClick={startEdit}>Correct this</button></div>}
         </div>
       )}
     </Card>

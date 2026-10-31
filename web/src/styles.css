@@ -297,6 +297,8 @@ tr.selected-row td { background: var(--accent-soft); }
 .guest-banner { margin-bottom: 16px; padding: 10px 14px; border: 1px solid var(--border); border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 6px; font-size: 13px; color: var(--text-2); }
 .session-notice { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
 .link-btn { border: none; background: none; padding: 0; font: inherit; color: var(--accent); cursor: pointer; white-space: nowrap; }
+.badge.example { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+.publish-row { gap: 10px; margin: 0 0 12px; flex-wrap: wrap; }
 .badge.admin { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 .account { gap: 10px; min-width: 0; }
 .account-email { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

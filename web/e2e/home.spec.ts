@@ -5,7 +5,7 @@ test.describe("home page", () => {
 
   test("explains GaugeLens and leads straight to a scan or an upload", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Verified readings from any camera");
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Verified readings from any digital display");
     await expect(page.locator(".home-steps li")).toHaveCount(4);
     await expect(page.getByText("No account needed.")).toBeVisible();
     await page.locator(".home-actions").getByRole("link", { name: "Start a scan" }).click();
@@ -18,7 +18,7 @@ test.describe("home page", () => {
   test("the logo goes home from any page, and Home is marked in the menu", async ({ page }) => {
     await page.goto("/#/clips");
     await page.getByRole("link", { name: "GaugeLens home" }).click();
-    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Verified readings from any camera");
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Verified readings from any digital display");
     await expect(page.locator("nav.nav").getByRole("link", { name: "Home" })).toHaveClass(/active/);
     await expect(page.locator("nav.nav a.active")).toHaveCount(1);
   });

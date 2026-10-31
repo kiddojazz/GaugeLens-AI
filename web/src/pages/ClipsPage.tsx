@@ -17,13 +17,13 @@ export default function ClipsPage() {
       <div className="page-head">
         <div>
           <h1>Clips</h1>
-          <p>{admin ? "Every clip from every person" : "Your clips"}: frames read, physics checked, misreads corrected.</p>
+          <p>{admin ? "Every clip from every person" : "Your clips and any examples"}: frames read, physics checked, misreads corrected.</p>
         </div>
         <Link className="btn primary" to="/upload">Upload clip</Link>
       </div>
       <Card pad={false}>
         <ErrorBox error={error} />
-        {error ? null : loading && !data ? <Loading /> : !data?.length ? <Empty>No clips yet. Upload one to start.</Empty> : (
+        {error ? null : loading && !data ? <Loading /> : !data?.length ? <Empty>No clips yet. <Link to="/scan">Scan</Link> or <Link to="/upload">upload</Link> one to start.</Empty> : (
           <table>
             <thead>
               <tr><th>Clip</th><th>Equipment</th><th>Status</th><th className="num">Frames</th><th className="num">Corrections</th><th className="num">Anomalies</th><th>Source</th>{admin && <th>Owner</th>}<th>Added</th></tr>
@@ -31,7 +31,7 @@ export default function ClipsPage() {
             <tbody>
               {data.map((c) => (
                 <tr key={c.clip_id} className="clickable" onClick={() => navigate(`/clips/${c.clip_id}`)}>
-                  <td><div className="row"><span className="mono">{shortId(c.clip_id)}</span>{c.is_demo_replay && <Simulated />}</div></td>
+                  <td><div className="row"><span className="mono">{shortId(c.clip_id)}</span>{c.is_demo_replay && <Simulated />}{c.is_public && <span className="badge example">Example</span>}</div></td>
                   <td>{c.equipment_id ?? <span className="muted">Identifying…</span>}<div className="muted small">{c.equipment_kind}</div></td>
                   <td>
                     {c.status === "processing" && c.progress != null ? (

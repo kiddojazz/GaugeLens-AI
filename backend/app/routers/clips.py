@@ -24,7 +24,8 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from ..access import Principal, catalogue_or_visible, current_principal, require_clip, require_evidence, visible
+from ..access import (Principal, admin_principal, can_edit_clip, catalogue_or_visible, current_principal, readable,
+                      require_clip, require_evidence, visible)
 from ..jobs.events import fetch_after
 from ..limits import caller_key, enforce
 from ..pipeline.clips import ClipError, create_clip, create_photo_clip, is_photo
@@ -105,7 +106,33 @@ async def get_clip(request: Request, clip_id: str, principal: Principal = Depend
         """SELECT (SELECT count(*) FROM frames WHERE clip_id = $1) AS frames,
                   (SELECT count(*) FROM readings r JOIN frames f ON f.frame_id = r.frame_id WHERE f.clip_id = $1) AS readings""",
         clip_id)
-    return {"clip": _jsonable(dict(clip)), "job": _jsonable(dict(job)) if job else None, "counts": dict(counts)}
+    publishable = principal.is_admin and _publishable(clip, principal)
+    return {"clip": _jsonable(dict(clip)), "job": _jsonable(dict(job)) if job else None, "counts": dict(counts),
+            "can_edit": await can_edit_clip(state.pool, principal, clip_id), "can_publish": publishable}
+
+
+def _publishable(clip, admin: Principal) -> bool:
+    """An admin's own clips and ones with no owner. Never someone else's private footage, or a guest's (deleted later)."""
+    own = clip["owner_user_id"] == admin.user_id
+    unowned = clip["owner_user_id"] is None and clip["owner_session_id"] is None
+    return (own or unowned) and clip["source_channel"] != "eval"
+
+
+class Publish(BaseModel):
+    public: bool
+
+
+@router.patch("/clips/{clip_id}/public")
+async def publish_clip(request: Request, clip_id: str, body: Publish, principal: Principal = Depends(admin_principal)):
+    """Shows a clip to every visitor as a read-only example, or stops showing it."""
+    state = _state(request)
+    clip = await state.pool.fetchrow("SELECT * FROM clips WHERE clip_id = $1", clip_id)
+    if clip is None:
+        raise HTTPException(status_code=404, detail="clip not found")
+    if body.public and not _publishable(clip, principal):
+        raise HTTPException(status_code=400, detail="only your own clips or unowned ones can be shown to visitors")
+    await state.pool.execute("UPDATE clips SET is_public = $2 WHERE clip_id = $1", clip_id, body.public)
+    return {"clip_id": clip_id, "is_public": body.public}
 
 
 @router.get("/clips/{clip_id}/events")
@@ -187,8 +214,8 @@ async def list_equipment(request: Request, principal: Principal = Depends(curren
     """The caller's own units, the units in clips they can see, and the shared catalogue."""
     state = _state(request)
     equipment = [dict(r) for r in await state.pool.fetch(
-        f"""SELECT * FROM equipment e WHERE {catalogue_or_visible('e', 1)}
-              OR EXISTS (SELECT 1 FROM clips c WHERE c.equipment_id = e.equipment_id AND {visible('c', 1)})
+        f"""SELECT *, {catalogue_or_visible('e', 1)} AS usable FROM equipment e WHERE {catalogue_or_visible('e', 1)}
+              OR EXISTS (SELECT 1 FROM clips c WHERE c.equipment_id = e.equipment_id AND {readable('c', 1)})
             ORDER BY equipment_id""", *principal.scope())]
     displays = [dict(r) for r in await state.pool.fetch("SELECT * FROM displays ORDER BY display_id")]
     instruments = [dict(r) for r in await state.pool.fetch("SELECT * FROM instruments ORDER BY instrument_id")]
@@ -204,7 +231,7 @@ async def list_clips(request: Request, limit: int = Query(50, le=200),
                      principal: Principal = Depends(current_principal)):
     state = _state(request)
     rows = await state.pool.fetch(
-        f"""SELECT c.clip_id, c.equipment_id, e.kind AS equipment_kind, c.status, c.source_channel, c.is_demo_replay,
+        f"""SELECT c.clip_id, c.equipment_id, e.kind AS equipment_kind, c.status, c.source_channel, c.is_demo_replay, c.is_public,
                   c.created_at, CASE WHEN $2 THEN COALESCE(u.email, CASE WHEN c.owner_session_id IS NOT NULL
                                                       THEN 'guest' END) END AS owner,
                   (SELECT count(*) FROM frames f WHERE f.clip_id = c.clip_id) AS frames,
@@ -213,7 +240,7 @@ async def list_clips(request: Request, limit: int = Query(50, le=200),
                   (SELECT progress FROM jobs j WHERE j.dedupe_key = 'process_clip:' || c.clip_id) AS progress
            FROM clips c LEFT JOIN equipment e USING (equipment_id) LEFT JOIN users u ON u.user_id = c.owner_user_id
            WHERE c.source_channel <> 'eval'                     -- evaluation scenarios live on the Evaluations page
-             AND {visible('c', 2)}
+             AND {readable('c', 2)}
            ORDER BY c.created_at DESC LIMIT $1""", limit, *principal.scope())
     return [_jsonable(dict(r)) for r in rows]
 
@@ -274,7 +301,7 @@ async def corrections(request: Request, clip_id: str | None = None, limit: int =
            FROM physics_checks pc JOIN readings r ON r.reading_id = pc.suspect_reading_id
            JOIN instruments i ON i.instrument_id = r.instrument_id LEFT JOIN frames f ON f.frame_id = pc.frame_id
            JOIN clips c ON c.clip_id = pc.clip_id
-           WHERE pc.outcome = 'misread_fixed' AND ($1::text IS NULL OR pc.clip_id = $1) AND {visible('c', 2)}
+           WHERE pc.outcome = 'misread_fixed' AND ($1::text IS NULL OR pc.clip_id = $1) AND {readable('c', 2)}
            ORDER BY pc.suspect_reading_id, pc.ts""", clip_id, *principal.scope())
     out = []
     for r in sorted(rows, key=lambda x: x["ts"], reverse=True)[:limit]:
@@ -306,7 +333,7 @@ async def retry_job(request: Request, job_id: str, principal: Principal = Depend
     state = _state(request)
     clip_id = await state.pool.fetchval("SELECT payload->>'clip_id' FROM jobs WHERE job_id = $1", job_id)
     if clip_id:
-        await require_clip(state.pool, principal, clip_id)
+        await require_clip(state.pool, principal, clip_id, edit=True)
     elif not principal.is_admin:
         raise HTTPException(status_code=404, detail="job not found")
     if not await state.queue.retry(job_id):

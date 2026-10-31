@@ -96,17 +96,21 @@ async def _frame_context(pool, clip_id: str, frame_id: str | None) -> str:
     return f"(I'm looking at frame:{frame_id} at t = {float(frame['t_offset_s']):g} s. On it: {shown}.)"
 
 
-async def history(pool, clip_id: str) -> list[dict]:
+async def history(pool, clip_id: str, visitor: str | None = None) -> list[dict]:
+    """One conversation: the owner's (visitor None), or a visitor's about an example clip."""
     rows = await pool.fetch(
-        """SELECT * FROM chat_messages WHERE clip_id = $1 AND NOT cleared ORDER BY created_at""", clip_id)
+        """SELECT * FROM chat_messages WHERE clip_id = $1 AND visitor IS NOT DISTINCT FROM $2 AND NOT cleared
+           ORDER BY created_at""", clip_id, visitor)
     return [dict(r) for r in rows]
 
 
-async def clear(pool, clip_id: str) -> None:
-    await pool.execute("UPDATE chat_messages SET cleared = true WHERE clip_id = $1", clip_id)
+async def clear(pool, clip_id: str, visitor: str | None = None) -> None:
+    await pool.execute("UPDATE chat_messages SET cleared = true WHERE clip_id = $1 AND visitor IS NOT DISTINCT FROM $2",
+                       clip_id, visitor)
 
 
-async def ask(ctx, clip_id: str, question: str, *, frame_id: str | None = None, anomaly_id: str | None = None) -> dict:
+async def ask(ctx, clip_id: str, question: str, *, frame_id: str | None = None, anomaly_id: str | None = None,
+              visitor: str | None = None) -> dict:
     """Answers one question and stores both turns. Returns the stored assistant message."""
     pool, client = ctx.pool, ctx.client
     question = question.strip()[:MAX_QUESTION]
@@ -118,10 +122,10 @@ async def ask(ctx, clip_id: str, question: str, *, frame_id: str | None = None, 
     if anomaly_id and not await pool.fetchval("SELECT 1 FROM anomalies WHERE anomaly_id = $1 AND clip_id = $2",
                                               anomaly_id, clip_id):
         anomaly_id = None
-    earlier = (await history(pool, clip_id))[-HISTORY_TURNS:]
+    earlier = (await history(pool, clip_id, visitor))[-HISTORY_TURNS:]
     await pool.execute(
-        """INSERT INTO chat_messages (message_id, clip_id, role, content, frame_id, anomaly_id)
-           VALUES ($1, $2, 'user', $3, $4, $5)""", new_id("msg_"), clip_id, question, frame_id, anomaly_id)
+        """INSERT INTO chat_messages (message_id, clip_id, role, content, frame_id, anomaly_id, visitor)
+           VALUES ($1, $2, 'user', $3, $4, $5, $6)""", new_id("msg_"), clip_id, question, frame_id, anomaly_id, visitor)
 
     tracer = await RunTracer.start(pool, kind="chat", anomaly_id=anomaly_id, clip_id=clip_id, title=question[:200],
                                    model=client.settings.read_model, prompt_version=PROMPT_VERSION)
@@ -137,9 +141,9 @@ async def ask(ctx, clip_id: str, question: str, *, frame_id: str | None = None, 
     await tracer.finish(verified=verified)
     message_id = new_id("msg_")
     row = await pool.fetchrow(
-        """INSERT INTO chat_messages (message_id, clip_id, role, content, citations, verified, problems, run_id)
-           VALUES ($1, $2, 'assistant', $3, $4, $5, $6, $7) RETURNING *""",
-        message_id, clip_id, answer, sorted(ids_in(answer)), verified, problems, tracer.run_id)
+        """INSERT INTO chat_messages (message_id, clip_id, role, content, citations, verified, problems, run_id, visitor)
+           VALUES ($1, $2, 'assistant', $3, $4, $5, $6, $7, $8) RETURNING *""",
+        message_id, clip_id, answer, sorted(ids_in(answer)), verified, problems, tracer.run_id, visitor)
     return dict(row)
 
 

@@ -23,7 +23,7 @@ export default function HomePage() {
     <div className="home">
       <section className="home-hero">
         <div>
-          <h1>Verified readings from any camera</h1>
+          <h1>Verified readings from any digital display</h1>
           <p className="home-lead">
             Point your phone at an inverter, meter or generator display. GaugeLens reads every value, checks the numbers
             against physics, fixes its own misreads and explains what it finds.
@@ -35,7 +35,7 @@ export default function HomePage() {
           <p className="muted small">{me?.kind === "guest" ? "No account needed." : <>Your results are under <Link to="/incidents">Incidents</Link> and <Link to="/clips">Clips</Link>.</>}</p>
         </div>
         <figure className="home-example" aria-label="Example of a misread being corrected">
-          <figcaption className="muted small">Example: a misread caught by physics</figcaption>
+          <figcaption className="muted small">Example from a test panel: a misread caught by physics</figcaption>
           <div className="example-row"><span className="muted">First read</span><span className="mono example-wrong">838 W</span></div>
           <div className="example-row"><span className="muted">Same screen</span><span className="mono">393 VA</span></div>
           <p className="example-why small"><Icon name="physics" size={13} /> Real power can't exceed apparent power, so GaugeLens looks at the digits again.</p>

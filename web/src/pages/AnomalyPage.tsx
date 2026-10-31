@@ -100,7 +100,7 @@ export default function AnomalyPage() {
               {waiting ? <Empty>The diagnosis agent is investigating… (Muse Spark, read-only tools)</Empty> : (
                 <div className="row" style={{ justifyContent: "space-between" }}>
                   <span className="muted">No diagnosis yet.</span>
-                  <button className="btn primary" onClick={run} disabled={busy}>Run diagnosis</button>
+                  <button className="btn primary" onClick={run} disabled={busy || a.can_edit === false}>Run diagnosis</button>
                 </div>
               )}
             </Card>
@@ -166,7 +166,9 @@ export default function AnomalyPage() {
           )}
           {d && (
             <Card title="Decision">
-              {d.decision === "pending" ? (
+              {d.decision === "pending" && a.can_edit === false ? (
+                <p className="muted small" style={{ margin: 0 }}>This is an example: its owner decides whether to approve the next step.</p>
+              ) : d.decision === "pending" ? (
                 <div className="stack">
                   <label className="field">Note (optional)<textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Technician will check on Friday" /></label>
                   <div className="row">

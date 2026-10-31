@@ -38,6 +38,10 @@ async def purge_session(pool, evidence, session_id: str) -> int | None:
             clip_ids):
         return None
     async with pool.acquire() as conn, conn.transaction():
+        # their conversations about example clips, which aren't theirs and stay
+        await conn.execute("DELETE FROM agent_runs WHERE run_id IN (SELECT run_id FROM chat_messages WHERE visitor = $1)",
+                           session_id)
+        await conn.execute("DELETE FROM chat_messages WHERE visitor = $1", session_id)
         for statement in _DELETE:
             await conn.execute(statement, clip_ids)
         equipment = [r["equipment_id"] for r in await conn.fetch(

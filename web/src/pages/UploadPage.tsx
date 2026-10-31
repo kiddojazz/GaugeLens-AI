@@ -12,7 +12,7 @@ export default function UploadPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const primary = (equipment.data ?? []).filter((e) => !e.linked_equipment_id);   // a clamp meter rides along with its inverter
+  const primary = (equipment.data ?? []).filter((e) => !e.linked_equipment_id && e.usable !== false);   // a clamp meter rides along with its inverter
 
   async function submit(event: FormEvent) {
     event.preventDefault();

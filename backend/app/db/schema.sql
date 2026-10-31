@@ -353,3 +353,9 @@ CREATE INDEX IF NOT EXISTS clips_owner_user ON clips (owner_user_id);
 -- Photo clips: one or more photos instead of a video. {"kind": "photos", "timed": bool, "photos": [{"uri", "t"}]}
 -- (t = seconds from the first photo: real capture times when every photo had one, else 300 s apart).
 ALTER TABLE clips ADD COLUMN IF NOT EXISTS media JSONB;
+
+-- Example clips: an admin can show a clip to every visitor, read-only. Each visitor's chat about it is their own
+-- (visitor = their user or guest session id; NULL = the conversation of the clip's owner) and goes with their session.
+ALTER TABLE clips ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS visitor TEXT;
+CREATE INDEX IF NOT EXISTS chat_messages_visitor ON chat_messages (visitor) WHERE visitor IS NOT NULL;

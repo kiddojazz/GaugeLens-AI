@@ -7,6 +7,8 @@ Three kinds of caller:
 - user: signed in with email + password. The token is an httpOnly cookie; their clips stay across visits.
 - admin: a user with role admin. Sees every clip, including guests' (while they exist) and eval clips.
 
+An admin can also mark a clip public: an example every visitor can read, but only its owner or an admin can change.
+
 A clip or equipment row belongs to a user (owner_user_id) or to a guest session (owner_session_id, no user).
 Rows with neither (seed, eval, rows from before accounts existed) are visible to admins only.
 """
@@ -84,6 +86,11 @@ def visible(alias: str, first: int) -> str:
     a, u, s = f"${first}::bool", f"${first + 1}::text", f"${first + 2}::text"
     return (f"({a} OR ({alias}.owner_user_id IS NOT NULL AND {alias}.owner_user_id = {u}) "
             f"OR ({alias}.owner_user_id IS NULL AND {alias}.owner_session_id = {s}))")
+
+
+def readable(alias: str, first: int) -> str:
+    """Clips: visible() plus examples anyone may read. Anything that changes a clip keeps using visible()."""
+    return f"({alias}.is_public OR {visible(alias, first)})"
 
 
 def catalogue_or_visible(alias: str, first: int) -> str:
@@ -173,16 +180,22 @@ async def guest_token_principal(request: Request) -> Principal | None:
 
 # --- ownership checks -------------------------------------------------------------------------------------------
 
-async def require_clip(pool, principal: Principal, clip_id: str) -> None:
-    """404 (not 403) for clips the caller can't see, so their existence isn't revealed."""
-    if not await pool.fetchval(f"SELECT 1 FROM clips c WHERE c.clip_id = $1 AND {visible('c', 2)}",
-                               clip_id, *principal.scope()):
+async def require_clip(pool, principal: Principal, clip_id: str, *, edit: bool = False) -> None:
+    """404 (not 403) for clips the caller can't see, so their existence isn't revealed. edit=True: not just read."""
+    check = visible("c", 2) if edit else readable("c", 2)
+    if not await pool.fetchval(f"SELECT 1 FROM clips c WHERE c.clip_id = $1 AND {check}", clip_id, *principal.scope()):
         raise HTTPException(status_code=404, detail="clip not found")
 
 
-async def require_anomaly(pool, principal: Principal, anomaly_id: str) -> None:
+async def can_edit_clip(pool, principal: Principal, clip_id: str) -> bool:
+    return bool(await pool.fetchval(f"SELECT 1 FROM clips c WHERE c.clip_id = $1 AND {visible('c', 2)}",
+                                    clip_id, *principal.scope()))
+
+
+async def require_anomaly(pool, principal: Principal, anomaly_id: str, *, edit: bool = False) -> None:
+    check = visible("c", 2) if edit else f"(c.is_public IS TRUE OR {visible('c', 2)})"
     if not await pool.fetchval(
-            f"SELECT 1 FROM anomalies a LEFT JOIN clips c USING (clip_id) WHERE a.anomaly_id = $1 AND {visible('c', 2)}",
+            f"SELECT 1 FROM anomalies a LEFT JOIN clips c USING (clip_id) WHERE a.anomaly_id = $1 AND {check}",
             anomaly_id, *principal.scope()):
         raise HTTPException(status_code=404, detail="anomaly not found")
 
@@ -250,6 +263,7 @@ async def adopt_guest_data(pool, guest_session_id: str, user_id: str) -> int:
             "RETURNING 1) SELECT count(*) FROM m", guest_session_id, user_id)
         await conn.execute("UPDATE equipment SET owner_user_id = $2 WHERE owner_session_id = $1 AND owner_user_id IS NULL",
                            guest_session_id, user_id)
+        await conn.execute("UPDATE chat_messages SET visitor = $2 WHERE visitor = $1", guest_session_id, user_id)
         await conn.execute("UPDATE sessions SET ended_at = now(), end_reason = 'signed_in', purged_at = now() "
                            "WHERE session_id = $1 AND ended_at IS NULL", guest_session_id)
     return moved

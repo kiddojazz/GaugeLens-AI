@@ -5,7 +5,7 @@ test.describe("as a guest", () => {
   test.use({ storageState: { cookies: [], origins: [] } });
 
   test("a guest gets a private session, is told what happens to their data, and sees no admin pages", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/#/scan");
     await expect(page.locator(".guest-banner")).toContainText("deleted when you refresh or close this page");
     await expect(page.locator("nav.nav").getByRole("link", { name: "Traces" })).toHaveCount(0);
     await expect(page.locator("nav.nav").getByRole("link", { name: "People" })).toHaveCount(0);

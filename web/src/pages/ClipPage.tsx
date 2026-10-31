@@ -161,13 +161,18 @@ export default function ClipPage() {
   const c = clip.data.clip;
   const progress = clip.data.job?.progress ?? 0;
   const photos = c.media?.kind === "photos";
+
+  async function togglePublic() {
+    await api.publishClip(c.clip_id, !c.is_public);
+    await clip.reload();
+  }
   const place = (i: number, f: Frame) => (photos ? `photo ${i + 1} / ${frameList.length}` : `t = ${f.t.toFixed(1)} s · frame ${i + 1} / ${frameList.length}`);
 
   return (
     <>
       <div className="page-head">
         <div>
-          <div className="muted small"><Link to="/clips">Clips</Link> / {shortId(c.clip_id)}</div>
+          <div className="muted small"><Link to="/clips">Clips</Link> / {shortId(c.clip_id)}{c.is_public && <span className="badge example" style={{ marginLeft: 8 }}>Example</span>}</div>
           <h1 className="row" style={{ marginTop: 4 }}>
             {c.equipment_id ?? "Identifying…"} <Status value={c.status} /> {c.is_demo_replay && <Simulated />}
           </h1>
@@ -177,6 +182,13 @@ export default function ClipPage() {
           <div className="row"><Progress value={progress} /><span className="mono small muted">{Math.round(progress * 100)}%</span></div>
         )}
       </div>
+      {clip.data.can_publish && (
+        <p className="row small muted publish-row">
+          <button className="btn small-btn" onClick={() => void togglePublic()} aria-pressed={!!c.is_public}>{c.is_public ? "Stop showing to visitors" : "Show to visitors"}</button>
+          {c.is_public ? "Every visitor can read this clip and ask about it privately." : "Visitors can't see this clip."}
+        </p>
+      )}
+      {clip.data.can_edit === false && <p className="notice small">This is an example clip. Your questions below are private to you; scan your own equipment any time.</p>}
       {clip.data.job?.last_error && <ErrorBox error={clip.data.job.last_error} />}
 
       <div className="grid-2">
@@ -242,7 +254,7 @@ export default function ClipPage() {
         </div>
 
         <div className="stack">
-          <IdentificationCard identification={c.identification} processing={processing} />
+          <IdentificationCard identification={c.identification} processing={processing} editable={clip.data.can_edit !== false} />
           <Card title="Readings on this frame" pad={false}><FrameReadings readings={frameReadings} unmapped={current?.unmapped} /></Card>
           <ChatPanel clipId={clipId} frameId={current?.frame_id} onCite={cite}
                      frameLabel={current ? place(index, current) : undefined}

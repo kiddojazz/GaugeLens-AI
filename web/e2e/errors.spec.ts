@@ -23,5 +23,5 @@ test("empty data shows friendly empty states", async ({ page }) => {
   await expect(page.getByText(/^No anomalies\./)).toBeVisible();
   await expect(page.getByText(/^No corrections yet\./)).toBeVisible();
   await page.locator("nav.nav").getByRole("link", { name: "Clips" }).click();
-  await expect(page.getByText("No clips yet. Upload one to start.")).toBeVisible();
+  await expect(page.getByText(/^No clips yet./)).toBeVisible();
 });
