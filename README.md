@@ -29,6 +29,10 @@ If a re-look can't resolve the conflict, GaugeLens doesn't guess. The reading go
 
 ## How it works
 
+![GaugeLens flow: SAM 3.1 finds and tracks displays, Muse Spark reads them and physics rules check the values. Passing values are stored. Failures go to a re-look, which stores a fixed value, sends an unresolved reading to review, or opens an anomaly when the same value is confirmed. An anomaly gets a cited diagnosis from the Muse Spark agent, citation and safety checks, then a person's approval or rejection.](assets/architecture.png)
+
+You can ask about a clip at any point once it has readings. It doesn't need to wait for a decision on an anomaly.
+
 ```mermaid
 flowchart LR
     A[Video or photos] --> B[SAM 3.1<br/>find and track displays]
