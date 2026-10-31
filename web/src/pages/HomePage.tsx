@@ -5,9 +5,10 @@ import { Icon } from "../icons";
 
 const STEPS = [
   { icon: "scan", title: "Capture", text: "Record the displays with your phone, or take a photo. Nothing to install." },
-  { icon: "readings", title: "Read", text: "SAM 3.1 finds each display and Muse Spark reads every value, identifying the equipment from its nameplate." },
-  { icon: "physics", title: "Verify", text: "Values are checked against physics. When one can't be right, GaugeLens looks again and corrects its own misread." },
+  { icon: "readings", title: "Read", text: "SAM 3.1 finds each display and Muse Spark reads the visible values, identifying the equipment from its nameplate." },
+  { icon: "physics", title: "Verify", text: "Values are checked against physics. When one can't be right, GaugeLens looks again and corrects the misread if the image supports it." },
   { icon: "chat", title: "Explain", text: "Confirmed faults get a diagnosis, and you can ask about anything you filmed. Answers cite the evidence." },
+  { icon: "check", title: "Decide", text: "GaugeLens proposes one safe next check. A person approves or rejects it, and the decision is recorded." },
 ] as const;
 
 const REASONS = [
@@ -25,8 +26,8 @@ export default function HomePage() {
         <div>
           <h1>Verified readings from any digital display</h1>
           <p className="home-lead">
-            Point your phone at an inverter, meter or generator display. GaugeLens reads every value, checks the numbers
-            against physics, fixes its own misreads and explains what it finds.
+            Point your phone at an inverter, meter or generator display. GaugeLens reads the values it can see, checks them
+            against physics, looks again when they can't be right and explains what it finds.
           </p>
           <div className="row home-actions">
             <Link className="btn primary" to="/scan"><Icon name="scan" size={15} /> Start a scan</Link>

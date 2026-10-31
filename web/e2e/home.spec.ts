@@ -6,7 +6,7 @@ test.describe("home page", () => {
   test("explains GaugeLens and leads straight to a scan or an upload", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("Verified readings from any digital display");
-    await expect(page.locator(".home-steps li")).toHaveCount(4);
+    await expect(page.locator(".home-steps li")).toHaveCount(5);
     await expect(page.getByText("No account needed.")).toBeVisible();
     await page.locator(".home-actions").getByRole("link", { name: "Start a scan" }).click();
     await expect(page).toHaveURL(/#\/scan$/);

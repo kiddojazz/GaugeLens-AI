@@ -185,7 +185,7 @@ export default function ScanPage() {
       <div className="page-head">
         <div>
           <h1>Scan</h1>
-          <p>Point your phone at the displays and record, or take photos. GaugeLens identifies the equipment, reads every value and then you can ask it anything about what you filmed.</p>
+          <p>Point your phone at the displays and record, or take photos. GaugeLens identifies the equipment and reads the values it can see, then you can ask it anything about what you filmed.</p>
         </div>
       </div>
       <ErrorBox error={error} />

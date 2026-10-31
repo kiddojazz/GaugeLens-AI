@@ -277,7 +277,7 @@ tr.selected-row td { background: var(--accent-soft); }
 .example-right { display: inline-flex; align-items: center; gap: 5px; color: var(--ok); font-weight: 600; }
 .example-why { display: flex; gap: 6px; align-items: flex-start; color: var(--text-2); margin: 6px 0; padding: 8px 0; border-top: 1px solid var(--border); }
 .example-why svg { flex: none; margin-top: 2px; }
-.home-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.home-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 175px), 1fr)); gap: 12px; }
 .home-steps li { padding: 16px; color: var(--accent); }
 .home-steps h3, .home-reason h3 { color: var(--text); margin: 8px 0 4px; font-size: 14px; }
 .home-reason h3 { margin-top: 0; }
