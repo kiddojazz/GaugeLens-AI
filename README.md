@@ -29,7 +29,7 @@ If a re-look can't resolve the conflict, GaugeLens doesn't guess. The reading go
 
 ## How it works
 
-![GaugeLens flow: SAM 3.1 finds and tracks displays, Muse Spark reads them and physics rules check the values. Passing values are stored. Failures go to a re-look, which stores a fixed value, sends an unresolved reading to review, or opens an anomaly when the same value is confirmed. An anomaly gets a cited diagnosis from the Muse Spark agent, citation and safety checks, then a person's approval or rejection.](assets/architecture.png)
+![GaugeLens architecture on Azure, UK South: the app runs in Azure Container Apps from an image in Azure Container Registry, with evidence in Azure Blob Storage, readings in Neon Postgres, and SAM 3.1 and Muse Spark on the Meta Model API. Physics rules check each reading. Failures go to a re-look, which stores a fixed value, sends an unresolved reading to review, or opens an anomaly when the same value is confirmed. An anomaly gets a cited diagnosis, citation and safety checks, then a person's approval or rejection.](assets/architecture.png)
 
 You can ask about a clip at any point once it has readings. It doesn't need to wait for a decision on an anomaly.
 
@@ -158,6 +158,31 @@ To reproduce the evaluation:
 .venv\Scripts\python -m backend.app.cli eval                                                                     # uses model credits
 ```
 
+## Deployment
+
+```mermaid
+flowchart LR
+    Dev["Developer<br/>deploy/azure.py up"] -- "source code" --> ACR
+
+    subgraph Azure["Azure, UK South"]
+        ACR["Azure Container Registry<br/>builds and stores the image"]
+        subgraph CA["Azure Container Apps"]
+            App["GaugeLens container<br/>FastAPI, worker and React app"]
+        end
+        Blob[("Azure Blob Storage<br/>videos, frames and crops")]
+        ACR -- "image" --> App
+        App <--> Blob
+    end
+
+    User["Browser or phone"] <-- "HTTPS" --> App
+    App <--> Neon[("Neon Postgres, London<br/>readings, checks and accounts")]
+    App <--> Meta["Meta Model API<br/>SAM 3.1 and Muse Spark"]
+```
+
+- **Build:** `deploy/azure.py up` sends the source to Azure Container Registry, which builds the image from the [Dockerfile](Dockerfile).
+- **Run:** one container serves the API and the web app, and runs the background worker. It has 1 CPU and 2 GiB of memory, and scales between 0 and 1 copies, so it costs little when idle and takes a few seconds to wake.
+- **Secrets:** settings from `.env` are stored as Container App secrets, not as plain values or in the image.
+
 ## Stack
 
 | Layer | Technology |
@@ -166,7 +191,7 @@ To reproduce the evaluation:
 | Backend | Python, FastAPI, asyncpg, with a job queue in Postgres and live progress over server-sent events |
 | Database | PostgreSQL with TimescaleDB locally, Neon when hosted |
 | Web | React 18, Vite, TypeScript, Playwright |
-| Hosting | Azure Container Apps, Azure Blob Storage for evidence ([deploy/azure.py](deploy/azure.py)) |
+| Hosting | Azure Container Apps, Azure Container Registry, Azure Blob Storage for evidence ([deploy/azure.py](deploy/azure.py)) |
 
 ## Repository layout
 
