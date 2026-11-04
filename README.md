@@ -5,7 +5,7 @@
 Built for the Meta Global AI Developer Hackathon 2026 on the Meta Model API: **SAM 3.1** and **Muse Spark**.
 
 - **Live app:** https://gaugelens.livelysmoke-844a3013.uksouth.azurecontainerapps.io (no account needed; the first load can take a few seconds while it wakes up)
-- **Demo video:** _link to be added_
+- **Demo video:** https://youtu.be/OdHXkyEfo18?si=yBLs1uWiNVGXcCET
 
 ## The problem
 
